@@ -20,7 +20,7 @@ impl<'a> Drive {
     }
 
     pub fn get_all_files(&mut self, page_token: Option<String>) -> Vec<File> {
-        let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, owners)";
+        let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe)";
         let mut file_list_call = self.hub.files().list().add_scope(Scope::Readonly).param("fields", fields);
         if page_token.is_some() {
             file_list_call = file_list_call.page_token(page_token.unwrap().as_str())
@@ -45,7 +45,7 @@ impl<'a> Drive {
         return fetched_files;
     }
 
-    pub fn get_all_files_in_hierarchy(&mut self) -> Vec<FileWrapper> {
+    pub fn get_all_files_in_hierarchy(&mut self, owned_only: bool) -> Vec<FileWrapper> {
         let mut files_by_id = HashMap::new();
         let borrowed_files: &Vec<File> = self.files.borrow();
         for file in borrowed_files {
@@ -53,10 +53,14 @@ impl<'a> Drive {
         }
         let mut file_wrappers = Vec::new();
         for file in borrowed_files {
+            if owned_only && !file.owned_by_me.unwrap() {
+                continue;
+            }
             let path = self.get_path(&file, &files_by_id);
             file_wrappers.push(FileWrapper {
                 file: file.clone(),
                 path,
+                directory: file.mime_type.clone().unwrap() == DIRECTORY_MIME_TYPE,
             });
         }
         return file_wrappers;
@@ -65,20 +69,19 @@ impl<'a> Drive {
     fn get_path(&'a self, file: &File, files_by_id: &HashMap<String, File>) -> String {
         let parents = file.parents.as_ref();
         if parents.is_none() {
-            return "".parse().unwrap();
+            return "/".parse().unwrap();
         }
         let parent_id = parents.unwrap().first();
         if parent_id.is_none() {
-            return "".parse().unwrap();
+            return "/".parse().unwrap();
         }
         let mut parent = files_by_id.get(parent_id.unwrap());
         if parent.is_none() {
-            println!("Some how {} doesn't exist", parent_id.unwrap());
-            return "".parse().unwrap();
+            return "/".parse().unwrap();
         }
         let parent_name = parent.unwrap().name.as_ref();
         if parent_name.is_none() {
-            return "".parse().unwrap();
+            return "/".parse().unwrap();
         }
         let mut path = parent_name.unwrap().clone();
         while parent.is_some() {
@@ -92,16 +95,20 @@ impl<'a> Drive {
                 } else {
                     parent = files_by_id.get(parent_id.unwrap());
                     if parent.is_some() {
-                        path = parent.unwrap().name.clone().unwrap() + "/" + path.as_str();
+                        path = parent.unwrap().name.clone().unwrap() + "/" + &path;
                     }
                 }
             }
         }
-        return path;
+        let root: String = "/".to_string();
+        return root + &path;
     }
 }
+
+const DIRECTORY_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 
 pub struct FileWrapper {
     pub file: File,
     pub path: String,
+    pub directory: bool,
 }
