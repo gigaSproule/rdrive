@@ -15,11 +15,16 @@ mod drive;
 
 fn main() {
     let hub = DriveHub::new(get_client(), get_authenticator());
-    let drive = drive::Drive::new(hub);
+    let mut drive = drive::Drive::new(hub);
     let files = drive.get_all_files(None);
     println!("Retrieved {} files", files.len());
     for file in files {
-        println!("Name: {}, Mime-Type: {}", file.name.unwrap(), file.mime_type.unwrap())
+        println!("Name: {}, Kind: {}, Mime-Type: {}", file.name.unwrap(), file.kind.unwrap(), file.mime_type.unwrap())
+    }
+    let file_wrappers = drive.get_all_files_in_hierarchy();
+    println!("Retrieved {} files", file_wrappers.len());
+    for file in file_wrappers {
+        println!("Path: {}, Name: {}", file.path, file.file.name.unwrap())
     }
 }
 
