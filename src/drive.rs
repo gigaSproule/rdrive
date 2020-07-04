@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::io::{Read, Write};
 
 use drive3::{File, Scope};
 use drive3::DriveHub;
@@ -8,20 +9,22 @@ use oauth2::{Authenticator, DefaultAuthenticatorDelegate, DiskTokenStorage};
 
 pub struct Drive {
     hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>,
+    root_dir: String,
     files: Vec<File>,
 }
 
 impl<'a> Drive {
-    pub fn new(hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>) -> Drive {
+    pub fn new(hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>, root_dir: String) -> Drive {
         Drive {
             hub,
+            root_dir,
             files: Vec::new(),
         }
     }
 
     pub fn get_all_files(&mut self, page_token: Option<String>) -> Vec<File> {
-        let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe)";
-        let mut file_list_call = self.hub.files().list().add_scope(Scope::Readonly).param("fields", fields);
+        let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink)";
+        let mut file_list_call = self.hub.files().list().add_scope(Scope::Full).param("fields", fields);
         if page_token.is_some() {
             file_list_call = file_list_call.page_token(page_token.unwrap().as_str())
         }
@@ -102,6 +105,24 @@ impl<'a> Drive {
         }
         let root: String = "/".to_string();
         return root + &path;
+    }
+
+    pub fn create_file(&'a self, file_wrapper: &FileWrapper) -> std::io::Result<()> {
+        let mut path = self.root_dir.clone();
+        path.push_str(&*file_wrapper.path);
+        path.push_str("/");
+        println!("Ensuring path {} exists", path);
+        std::fs::create_dir_all(&path)?;
+        path.push_str(file_wrapper.file.name.borrow().as_ref().unwrap());
+        println!("Creating file {}", path);
+        let mut created_file = std::fs::File::create(path)?;
+        if !file_wrapper.file.mime_type.borrow().as_ref().unwrap().contains("google") {
+            let response = self.hub.files().get(file_wrapper.file.id.borrow().as_ref().unwrap()).param("alt", "media").add_scope(Scope::Full).doit();
+            let mut response_body = Vec::new();
+            response.unwrap().0.read_to_end(&mut response_body)?;
+            created_file.write_all(response_body.as_ref())?;
+        }
+        Ok(())
     }
 }
 

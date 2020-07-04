@@ -3,6 +3,7 @@ extern crate hyper;
 extern crate hyper_rustls;
 extern crate yup_oauth2 as oauth2;
 
+use std::borrow::Borrow;
 use std::path::Path;
 
 use drive3::DriveHub;
@@ -15,7 +16,7 @@ mod drive;
 
 fn main() {
     let hub = DriveHub::new(get_client(), get_authenticator());
-    let mut drive = drive::Drive::new(hub);
+    let mut drive = drive::Drive::new(hub, String::from("/home/benjamin/rdrive"));
     let files = drive.get_all_files(None);
     println!("Retrieved {} files", files.len());
     for file in files {
@@ -24,7 +25,14 @@ fn main() {
     let file_wrappers = drive.get_all_files_in_hierarchy(true);
     println!("Retrieved {} files", file_wrappers.len());
     for file in file_wrappers {
-        println!("Path: {}, Name: {}, Directory: {}", file.path, file.file.name.unwrap(), file.directory)
+        println!("Path: {}, Name: {}, Directory: {}", &file.path, &file.file.name.borrow().as_ref().unwrap(), &file.directory);
+        if file.directory {
+            continue;
+        }
+        let created = drive.create_file(&file);
+        if created.is_err() {
+            println!("Failed to create file {}/{}. {}", &file.path, &file.file.name.borrow().as_ref().unwrap(), created.err().unwrap());
+        }
     }
 }
 
