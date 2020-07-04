@@ -162,7 +162,7 @@ impl<'a> Drive {
     }
 
     fn get_config_file() -> std::fs::File {
-        let file = std::env::var("XDG_CONFIG_HOME").unwrap_or(std::env::var("HOME").unwrap() + "/.config") + "/rdrive/config.json";
+        let file = Drive::get_base_config_path() + "/rdrive/config.json";
         let config_file = Path::new(file.as_str());
         if !config_file.exists() {
             let create_config_dir = std::fs::create_dir_all(config_file.parent().unwrap());
@@ -172,6 +172,15 @@ impl<'a> Drive {
             return std::fs::File::create(config_file).unwrap();
         }
         return std::fs::OpenOptions::new().write(true).read(true).open(config_file).unwrap();
+    }
+
+    fn get_base_config_path() -> String {
+        return match std::env::consts::OS {
+            "windows" => std::env::var("LOCALAPPDATA").unwrap(),
+            "linux" => std::env::var("XDG_CONFIG_HOME").unwrap_or(std::env::var("HOME").unwrap() + "/.config"),
+            "mac" => std::env::var("HOME").unwrap() + "/Library/Preferences",
+            _ => String::new()
+        };
     }
 }
 
