@@ -16,13 +16,8 @@ mod drive;
 
 fn main() {
     let hub = DriveHub::new(get_client(), get_authenticator());
-    let mut drive = drive::Drive::new(hub, String::from("/home/benjamin/rdrive"));
-    let files = drive.get_all_files(None);
-    println!("Retrieved {} files", files.len());
-    for file in files {
-        println!("Name: {}, Kind: {}, Mime-Type: {}, owned: {}", file.name.unwrap(), file.kind.unwrap(), file.mime_type.unwrap(), file.owned_by_me.unwrap())
-    }
-    let file_wrappers = drive.get_all_files_in_hierarchy(true);
+    let mut drive = drive::Drive::new(hub);
+    let file_wrappers = drive.get_all_files(true);
     println!("Retrieved {} files", file_wrappers.len());
     for file in file_wrappers {
         println!("Path: {}, Name: {}, Directory: {}", &file.path, &file.file.name.borrow().as_ref().unwrap(), &file.directory);

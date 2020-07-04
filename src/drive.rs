@@ -1,28 +1,38 @@
-use std::borrow::Borrow;
-use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::{
+    borrow::Borrow,
+    collections::HashMap,
+    io::{BufReader, Read, Write},
+    path::Path,
+};
+use std::io::BufWriter;
 
 use drive3::{File, Scope};
 use drive3::DriveHub;
 use hyper::Client;
 use oauth2::{Authenticator, DefaultAuthenticatorDelegate, DiskTokenStorage};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 
 pub struct Drive {
     hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>,
-    root_dir: String,
+    config: Config,
     files: Vec<File>,
 }
 
 impl<'a> Drive {
-    pub fn new(hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>, root_dir: String) -> Drive {
+    pub fn new(hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>) -> Drive {
         Drive {
             hub,
-            root_dir,
+            config: Drive::get_config(),
             files: Vec::new(),
         }
     }
 
-    pub fn get_all_files(&mut self, page_token: Option<String>) -> Vec<File> {
+    fn init(&'a mut self) {
+        self.files = self.fetch_files(None);
+    }
+
+    fn fetch_files(&'a self, page_token: Option<String>) -> Vec<File> {
         let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink)";
         let mut file_list_call = self.hub.files().list().add_scope(Scope::Full).param("fields", fields);
         if page_token.is_some() {
@@ -33,7 +43,7 @@ impl<'a> Drive {
             Ok(x) => {
                 let mut files = x.1.files.unwrap();
                 if x.1.next_page_token.is_some() {
-                    for file in self.get_all_files(x.1.next_page_token.to_owned()) {
+                    for file in self.fetch_files(x.1.next_page_token.to_owned()) {
                         files.push(file);
                     }
                 }
@@ -44,12 +54,14 @@ impl<'a> Drive {
                 Vec::new()
             }
         };
-        self.files = fetched_files.clone();
         return fetched_files;
     }
 
-    pub fn get_all_files_in_hierarchy(&mut self, owned_only: bool) -> Vec<FileWrapper> {
+    pub fn get_all_files(&'a mut self, owned_only: bool) -> Vec<FileWrapper> {
         let mut files_by_id = HashMap::new();
+        if self.files.is_empty() {
+            self.init();
+        }
         let borrowed_files: &Vec<File> = self.files.borrow();
         for file in borrowed_files {
             files_by_id.insert(file.id.clone().unwrap(), file.clone());
@@ -60,6 +72,9 @@ impl<'a> Drive {
                 continue;
             }
             let path = self.get_path(&file, &files_by_id);
+            if self.config.ignore.iter().any(|regex| regex.is_match(&path)) {
+                continue;
+            }
             file_wrappers.push(FileWrapper {
                 file: file.clone(),
                 path,
@@ -108,21 +123,55 @@ impl<'a> Drive {
     }
 
     pub fn create_file(&'a self, file_wrapper: &FileWrapper) -> std::io::Result<()> {
-        let mut path = self.root_dir.clone();
-        path.push_str(&*file_wrapper.path);
-        path.push_str("/");
-        println!("Ensuring path {} exists", path);
-        std::fs::create_dir_all(&path)?;
-        path.push_str(file_wrapper.file.name.borrow().as_ref().unwrap());
-        println!("Creating file {}", path);
-        let mut created_file = std::fs::File::create(path)?;
-        if !file_wrapper.file.mime_type.borrow().as_ref().unwrap().contains("google") {
-            let response = self.hub.files().get(file_wrapper.file.id.borrow().as_ref().unwrap()).param("alt", "media").add_scope(Scope::Full).doit();
-            let mut response_body = Vec::new();
-            response.unwrap().0.read_to_end(&mut response_body)?;
-            created_file.write_all(response_body.as_ref())?;
+        let path_string = self.config.root_dir.clone() + &file_wrapper.path + "/" + &file_wrapper.file.name.borrow().as_ref().unwrap();
+        let path = Path::new(&path_string);
+        if !path.exists() {
+            std::fs::create_dir_all(&path.parent().unwrap())?;
+            if !file_wrapper.file.mime_type.borrow().as_ref().unwrap().contains("google") {
+                let response = self.hub.files().get(file_wrapper.file.id.borrow().as_ref().unwrap()).param("alt", "media").add_scope(Scope::Full).doit();
+                let mut response_body = Vec::new();
+                response.unwrap().0.read_to_end(&mut response_body)?;
+                std::fs::File::create(path)?.write_all(response_body.as_ref())?;
+            } else {
+                std::fs::File::create(path)?;
+            }
         }
         Ok(())
+    }
+
+    fn get_config() -> Config {
+        let config_file = Drive::get_config_file();
+        let stored_config: serde_json::Result<StoredConfig> = serde_json::from_reader(BufReader::new(&config_file));
+        if stored_config.is_ok() {
+            let config = stored_config.unwrap();
+            return Config {
+                ignore: config.ignore.iter().map(|regex| Regex::new(regex).unwrap()).collect(),
+                root_dir: config.root_dir,
+            };
+        }
+        let default_root_dir = std::env::var("HOME").unwrap() + "/rdrive";
+        let default_stored_config = StoredConfig { ignore: Vec::new(), root_dir: default_root_dir.clone() };
+        let write_result = serde_json::to_writer_pretty(BufWriter::new(&config_file), &default_stored_config);
+        if write_result.is_err() {
+            println!("{}", write_result.unwrap_err());
+        }
+        return Config {
+            ignore: Vec::new(),
+            root_dir: default_root_dir.clone(),
+        };
+    }
+
+    fn get_config_file() -> std::fs::File {
+        let file = std::env::var("XDG_CONFIG_HOME").unwrap_or(std::env::var("HOME").unwrap() + "/.config") + "/rdrive/config.json";
+        let config_file = Path::new(file.as_str());
+        if !config_file.exists() {
+            let create_config_dir = std::fs::create_dir_all(config_file.parent().unwrap());
+            if create_config_dir.is_err() {
+                panic!("Failed to create config path {}. {}", config_file.display(), create_config_dir.unwrap_err());
+            }
+            return std::fs::File::create(config_file).unwrap();
+        }
+        return std::fs::OpenOptions::new().write(true).read(true).open(config_file).unwrap();
     }
 }
 
@@ -132,4 +181,15 @@ pub struct FileWrapper {
     pub file: File,
     pub path: String,
     pub directory: bool,
+}
+
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+struct StoredConfig {
+    ignore: Vec<String>,
+    root_dir: String,
+}
+
+struct Config {
+    ignore: Vec<Regex>,
+    root_dir: String,
 }
