@@ -1,14 +1,16 @@
 use std::{
     borrow::Borrow,
     collections::HashMap,
-    io::{BufReader, Read, Write},
+    io::{BufReader, Read},
     path::Path,
 };
 use std::io::BufWriter;
 
+use async_std::prelude::*;
 use drive3::{File, Scope};
 use drive3::DriveHub;
 use hyper::Client;
+use log::{debug, error};
 use oauth2::{Authenticator, DefaultAuthenticatorDelegate, DiskTokenStorage};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -33,7 +35,7 @@ impl<'a> Drive {
     }
 
     fn fetch_files(&'a self, page_token: Option<String>) -> Vec<File> {
-        let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink)";
+        let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink, webViewLink)";
         let mut file_list_call = self.hub.files().list().add_scope(Scope::Full).param("fields", fields);
         if page_token.is_some() {
             file_list_call = file_list_call.page_token(page_token.unwrap().as_str())
@@ -50,7 +52,7 @@ impl<'a> Drive {
                 files
             }
             Err(e) => {
-                println!("Error: {}", e);
+                error!("Error: {}", e);
                 Vec::new()
             }
         };
@@ -122,18 +124,28 @@ impl<'a> Drive {
         return root + &path;
     }
 
-    pub fn create_file(&'a self, file_wrapper: &FileWrapper) -> std::io::Result<()> {
+    pub async fn create_file(&'a self, file_wrapper: FileWrapper) -> std::io::Result<()> {
         let path_string = self.config.root_dir.clone() + &file_wrapper.path + "/" + &file_wrapper.file.name.borrow().as_ref().unwrap();
         let path = Path::new(&path_string);
         if !path.exists() {
-            std::fs::create_dir_all(&path.parent().unwrap())?;
+            async_std::fs::create_dir_all(&path.parent().unwrap()).await?;
             if !file_wrapper.file.mime_type.borrow().as_ref().unwrap().contains("google") {
+                debug!("Creating file {}", path_string);
                 let response = self.hub.files().get(file_wrapper.file.id.borrow().as_ref().unwrap()).param("alt", "media").add_scope(Scope::Full).doit();
                 let mut response_body = Vec::new();
                 response.unwrap().0.read_to_end(&mut response_body)?;
-                std::fs::File::create(path)?.write_all(response_body.as_ref())?;
+                let mut file = async_std::fs::File::create(path).await?;
+                file.write_all(response_body.as_ref()).await?;
+                file.sync_all().await?;
+                debug!("Created file {}", path_string);
             } else {
-                std::fs::File::create(path)?;
+                debug!("Creating Google file {}", path_string);
+                let mut file_content: String = "#!/usr/bin/env bash\nxdg-open ".to_string();
+                file_content.push_str(&file_wrapper.file.web_view_link.borrow().as_ref().unwrap());
+                let mut file = async_std::fs::File::create(path).await?;
+                file.write_all(file_content.as_bytes()).await?;
+                file.sync_all().await?;
+                debug!("Created Google file {}", path_string);
             }
         }
         Ok(())
@@ -153,7 +165,7 @@ impl<'a> Drive {
         let default_stored_config = StoredConfig { ignore: Vec::new(), root_dir: default_root_dir.clone() };
         let write_result = serde_json::to_writer_pretty(BufWriter::new(&config_file), &default_stored_config);
         if write_result.is_err() {
-            println!("{}", write_result.unwrap_err());
+            error!("{}", write_result.unwrap_err());
         }
         return Config {
             ignore: Vec::new(),
@@ -186,6 +198,7 @@ impl<'a> Drive {
 
 const DIRECTORY_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 
+#[derive(Clone)]
 pub struct FileWrapper {
     pub file: File,
     pub path: String,
