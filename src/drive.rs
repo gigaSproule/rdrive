@@ -4,12 +4,15 @@ use std::{
     io::{BufReader, Read},
     path::Path,
 };
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::thread::JoinHandle;
 
-use async_std::prelude::*;
 use drive3::{File, Scope};
 use drive3::DriveHub;
+use futures::{AsyncWriteExt, Future};
 use hyper::Client;
+use hyper::client::Response;
 use log::{debug, error};
 use oauth2::{Authenticator, DefaultAuthenticatorDelegate, DiskTokenStorage};
 use regex::Regex;
@@ -74,7 +77,7 @@ impl<'a> Drive {
                 continue;
             }
             let path = self.get_path(&file, &files_by_id);
-            if self.config.ignore.iter().any(|regex| regex.is_match(&path)) {
+            if self.config.ignore.iter().any(|regex| regex.is_match(path.to_str().unwrap())) {
                 continue;
             }
             file_wrappers.push(FileWrapper {
@@ -86,24 +89,25 @@ impl<'a> Drive {
         return file_wrappers;
     }
 
-    fn get_path(&'a self, file: &File, files_by_id: &HashMap<String, File>) -> String {
+    fn get_path(&'a self, file: &File, files_by_id: &HashMap<String, File>) -> PathBuf {
         let parents = file.parents.as_ref();
         if parents.is_none() {
-            return "/".parse().unwrap();
+            return PathBuf::new();
         }
         let parent_id = parents.unwrap().first();
         if parent_id.is_none() {
-            return "/".parse().unwrap();
+            return PathBuf::new();
         }
         let mut parent = files_by_id.get(parent_id.unwrap());
         if parent.is_none() {
-            return "/".parse().unwrap();
+            return PathBuf::new();
         }
         let parent_name = parent.unwrap().name.as_ref();
         if parent_name.is_none() {
-            return "/".parse().unwrap();
+            return PathBuf::new();
         }
-        let mut path = parent_name.unwrap().clone();
+        let mut path = PathBuf::new();
+        path.push(parent_name.unwrap());
         while parent.is_some() {
             let parents = parent.unwrap().parents.as_ref();
             if parents.is_none() {
@@ -115,40 +119,52 @@ impl<'a> Drive {
                 } else {
                     parent = files_by_id.get(parent_id.unwrap());
                     if parent.is_some() {
-                        path = parent.unwrap().name.clone().unwrap() + "/" + &path;
+                        let parent_name: String = parent.unwrap().name.clone().unwrap();
+                        path = Path::new(&parent_name).join(&path.as_path());
                     }
                 }
             }
         }
-        let root: String = "/".to_string();
-        return root + &path;
+        return path;
     }
 
-    pub async fn create_file(&'a self, file_wrapper: FileWrapper) -> std::io::Result<()> {
-        let path_string = self.config.root_dir.clone() + &file_wrapper.path + "/" + &file_wrapper.file.name.borrow().as_ref().unwrap();
-        let path = Path::new(&path_string);
+    pub fn create_file(&'a self, file_wrapper: FileWrapper) -> JoinHandle<()> {
+        let mut path = self.config.root_dir.clone();
+        path.push(&file_wrapper.path.as_path());
+        path.push(&file_wrapper.file.name.borrow().as_ref().unwrap());
         if !path.exists() {
-            async_std::fs::create_dir_all(&path.parent().unwrap()).await?;
+            std::fs::create_dir_all(&path.parent().unwrap());
             if !file_wrapper.file.mime_type.borrow().as_ref().unwrap().contains("google") {
-                debug!("Creating file {}", path_string);
                 let response = self.hub.files().get(file_wrapper.file.id.borrow().as_ref().unwrap()).param("alt", "media").add_scope(Scope::Full).doit();
-                let mut response_body = Vec::new();
-                response.unwrap().0.read_to_end(&mut response_body)?;
-                let mut file = async_std::fs::File::create(path).await?;
-                file.write_all(response_body.as_ref()).await?;
-                file.sync_all().await?;
-                debug!("Created file {}", path_string);
+                if response.is_ok() {
+                    let mut unwrapped_response = response.unwrap();
+                    return std::thread::spawn(move || <Drive>::write_to_file(&mut path, unwrapped_response));
+                }
             } else {
-                debug!("Creating Google file {}", path_string);
-                let mut file_content: String = "#!/usr/bin/env bash\nxdg-open ".to_string();
-                file_content.push_str(&file_wrapper.file.web_view_link.borrow().as_ref().unwrap());
-                let mut file = async_std::fs::File::create(path).await?;
-                file.write_all(file_content.as_bytes()).await?;
-                file.sync_all().await?;
-                debug!("Created Google file {}", path_string);
-            }
+                return std::thread::spawn(move || <Drive>::write_to_google_file(&file_wrapper, path));
+            };
         }
-        Ok(())
+        return std::thread::spawn(|| {});
+    }
+
+    fn write_to_file(mut path: &mut PathBuf, mut unwrapped_response: (Response, File)) {
+        debug!("Creating file {}", path.display());
+        let mut response_body = Vec::new();
+        unwrapped_response.0.read_to_end(&mut response_body);
+        let mut file = std::fs::File::create(path.as_path()).unwrap();
+        file.write_all(response_body.as_ref());
+        file.sync_all();
+        debug!("Created file {}", path.display());
+    }
+
+    fn write_to_google_file(file_wrapper: &FileWrapper, mut path: PathBuf) {
+        debug!("Creating Google file {}", path.display());
+        let mut file_content: String = "#!/usr/bin/env bash\nxdg-open ".to_string();
+        file_content.push_str(&file_wrapper.file.web_view_link.borrow().as_ref().unwrap());
+        let mut file = std::fs::File::create(path.as_path()).unwrap();
+        file.write_all(file_content.as_bytes());
+        file.sync_all();
+        debug!("Created Google file {}", path.display());
     }
 
     fn get_config() -> Config {
@@ -161,7 +177,8 @@ impl<'a> Drive {
                 root_dir: config.root_dir,
             };
         }
-        let default_root_dir = std::env::var("HOME").unwrap() + "/rdrive";
+        let home = std::env::var("HOME").unwrap();
+        let default_root_dir = Path::new(&home).join("rdrive");
         let default_stored_config = StoredConfig { ignore: Vec::new(), root_dir: default_root_dir.clone() };
         let write_result = serde_json::to_writer_pretty(BufWriter::new(&config_file), &default_stored_config);
         if write_result.is_err() {
@@ -201,17 +218,17 @@ const DIRECTORY_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 #[derive(Clone)]
 pub struct FileWrapper {
     pub file: File,
-    pub path: String,
+    pub path: PathBuf,
     pub directory: bool,
 }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {
     ignore: Vec<String>,
-    root_dir: String,
+    root_dir: PathBuf,
 }
 
 struct Config {
     ignore: Vec<Regex>,
-    root_dir: String,
+    root_dir: PathBuf,
 }

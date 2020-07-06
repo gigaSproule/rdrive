@@ -7,7 +7,6 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-std = {version = "1.6.2", features = ["unstable"]}
 futures = "0.3.5"
 google-drive3 = "*"
 hyper = "^0.10"

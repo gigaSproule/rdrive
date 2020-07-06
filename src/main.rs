@@ -11,6 +11,7 @@ use futures::{executor::block_on, future};
 use hyper::Client;
 use hyper::net::HttpsConnector;
 use hyper_rustls::TlsClient;
+use log::debug;
 use oauth2::{ApplicationSecret, Authenticator, DefaultAuthenticatorDelegate, DiskTokenStorage};
 
 use crate::drive::{Drive, FileWrapper};
@@ -22,19 +23,21 @@ fn main() {
     let hub = DriveHub::new(get_client(), get_authenticator());
     let mut drive = Drive::new(hub);
     let file_wrappers = drive.get_all_files(true);
-    println!("Retrieved {} files", file_wrappers.len());
+    debug!("Retrieved {} files", file_wrappers.len());
     block_on(download_all_files(&mut drive, file_wrappers));
 }
 
 async fn download_all_files(drive: &mut Drive, file_wrappers: Vec<FileWrapper>) {
     let mut download_futures = vec![];
     for file in file_wrappers {
-        println!("Path: {}, Name: {}, Directory: {}", &file.path, &file.file.name.borrow().as_ref().unwrap(), &file.directory);
+        debug!("Path: {}, Name: {}, Directory: {}", &file.path.display(), &file.file.name.borrow().as_ref().unwrap(), &file.directory);
         if !file.directory {
             download_futures.push(drive.create_file(file.clone()));
         }
     }
-    future::join_all(download_futures).await;
+    for future in download_futures {
+        future.join();
+    }
 }
 
 fn get_client() -> Client {
