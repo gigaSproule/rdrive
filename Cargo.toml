@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 futures = "0.3.5"
+glob = "0.3.0"
 google-drive3 = "*"
 hyper = "^0.10"
 hyper-rustls = "^0.6"
