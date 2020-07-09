@@ -27,3 +27,13 @@ By default, this will create an empty configuration file called `config.json`.
 |----------|--------------------------------|----------------|
 | ignore   | Array of ant matchable strings | `[]`           |
 | root_dir | The directory to sync to       | `$HOME/rdrive` for Linux/Mac<br>`%USERPROFILE%` for Windows|
+
+## Data location
+### Linux
+`$XDG_DATA_HOME` or `$HOME/.local/share`
+
+### Mac
+`~/Library/rdrive`
+
+### Windows
+`%LOCALAPPDATA%/rdrive`

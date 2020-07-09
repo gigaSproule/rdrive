@@ -15,24 +15,30 @@ use hyper::Client;
 use hyper::client::Response;
 use log::{debug, error};
 use oauth2::{Authenticator, DefaultAuthenticatorDelegate, DiskTokenStorage};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-pub struct Drive {
-    hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>,
+use crate::dbcontext::DbContext;
+
+pub struct Drive<'a> {
+    hub: &'a DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>,
+    context: DbContext<'a>,
     config: Config,
     files: Vec<File>,
 }
 
-impl<'a> Drive {
-    pub fn new(hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>) -> Drive {
+impl<'a> Drive<'a> {
+    pub fn new(hub: &'a DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>, connection: &'a Connection) -> Drive<'a> {
         Drive {
             hub,
+            context: DbContext::new(connection),
             config: Drive::get_config(),
             files: Vec::new(),
         }
     }
 
-    fn init(&'a mut self) {
+    fn init(&mut self) {
+        self.context.init();
         self.files = self.fetch_files(None);
     }
 
@@ -61,7 +67,7 @@ impl<'a> Drive {
         return fetched_files;
     }
 
-    pub fn get_all_files(&'a mut self, owned_only: bool) -> Vec<FileWrapper> {
+    pub fn get_all_files(&mut self, owned_only: bool) -> Vec<FileWrapper> {
         let mut files_by_id = HashMap::new();
         if self.files.is_empty() {
             self.init();
@@ -70,6 +76,7 @@ impl<'a> Drive {
         for file in borrowed_files {
             files_by_id.insert(file.id.clone().unwrap(), file.clone());
         }
+        self.context.conn.execute_batch("BEGIN TRANSACTION;");
         let mut file_wrappers = Vec::new();
         for file in borrowed_files {
             if owned_only && !file.owned_by_me.unwrap() {
@@ -79,12 +86,18 @@ impl<'a> Drive {
             if self.config.ignore.iter().any(|pattern| pattern.matches_path(path.as_path())) {
                 continue;
             }
-            file_wrappers.push(FileWrapper {
-                file: file.clone(),
+            let file_wrapper = FileWrapper {
+                id: file.id.borrow().as_ref().unwrap().to_owned(),
+                name: file.name.borrow().as_ref().unwrap().to_owned(),
+                mime_type: file.mime_type.borrow().as_ref().unwrap().to_owned(),
                 path,
                 directory: file.mime_type.clone().unwrap() == DIRECTORY_MIME_TYPE,
-            });
+                web_view_link: file.web_view_link.clone(),
+            };
+            self.context.create_file(&file_wrapper);
+            file_wrappers.push(file_wrapper);
         }
+        self.context.conn.execute_batch("COMMIT TRANSACTION;");
         return file_wrappers;
     }
 
@@ -131,15 +144,15 @@ impl<'a> Drive {
     pub fn create_file(&'a self, file_wrapper: FileWrapper) -> JoinHandle<()> {
         let mut path = self.config.root_dir.clone();
         path.push(&file_wrapper.path.as_path());
-        path.push(&file_wrapper.file.name.borrow().as_ref().unwrap());
+        path.push(&file_wrapper.name);
         if !path.exists() {
             let create_dirs_result = std::fs::create_dir_all(&path.parent().unwrap());
             if create_dirs_result.is_err() {
                 error!("Failed to create directory {} with error {}", &path.parent().unwrap().display(), create_dirs_result.unwrap_err());
                 return std::thread::spawn(|| {});
             }
-            if !file_wrapper.file.mime_type.borrow().as_ref().unwrap().contains("google") {
-                let response = self.hub.files().get(file_wrapper.file.id.borrow().as_ref().unwrap()).param("alt", "media").add_scope(Scope::Full).doit();
+            if !file_wrapper.mime_type.contains("google") {
+                let response = self.hub.files().get(file_wrapper.id.as_ref()).param("alt", "media").add_scope(Scope::Full).doit();
                 if response.is_ok() {
                     let unwrapped_response = response.unwrap();
                     return std::thread::spawn(move || <Drive>::write_to_file(&mut path, unwrapped_response));
@@ -174,7 +187,7 @@ impl<'a> Drive {
     fn write_to_google_file(file_wrapper: &FileWrapper, path: PathBuf) {
         debug!("Creating Google file {}", path.display());
         let mut file_content: String = "#!/usr/bin/env bash\nxdg-open ".to_string();
-        file_content.push_str(&file_wrapper.file.web_view_link.borrow().as_ref().unwrap());
+        file_content.push_str(&file_wrapper.web_view_link.borrow().as_ref().unwrap());
         let mut file = std::fs::File::create(path.as_path()).unwrap();
         let write_result = file.write_all(file_content.as_bytes());
         if write_result.is_err() {
@@ -217,8 +230,9 @@ impl<'a> Drive {
     }
 
     fn get_config_file() -> std::fs::File {
-        let file = Drive::get_base_config_path() + "/rdrive/config.json";
-        let config_file = Path::new(file.as_str());
+        let config_file = Path::new(&Drive::get_base_config_path())
+            .join("rdrive")
+            .join("config.json");
         if !config_file.exists() {
             let create_config_dir = std::fs::create_dir_all(config_file.parent().unwrap());
             if create_config_dir.is_err() {
@@ -243,9 +257,12 @@ const DIRECTORY_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 
 #[derive(Clone)]
 pub struct FileWrapper {
-    pub file: File,
+    pub id: String,
+    pub name: String,
+    pub mime_type: String,
     pub path: PathBuf,
     pub directory: bool,
+    pub web_view_link: Option<String>,
 }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
