@@ -5,11 +5,10 @@ use std::{
     path::Path,
 };
 use std::io::{BufWriter, Write};
-use std::os::raw::c_int;
 use std::path::PathBuf;
 use std::thread::JoinHandle;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, FixedOffset, Utc};
 use drive3::{File, Scope};
 use drive3::DriveHub;
 use glob::Pattern;
@@ -43,7 +42,7 @@ impl<'a> Drive<'a> {
     }
 
     fn fetch_files(&self, page_token: Option<String>) -> Vec<File> {
-        let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink, webViewLink)";
+        let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink, webViewLink, modifiedTime)";
         let mut file_list_call = self.hub.files().list().add_scope(Scope::Full).param("fields", fields);
         if page_token.is_some() {
             file_list_call = file_list_call.page_token(page_token.unwrap().as_str())
@@ -88,6 +87,8 @@ impl<'a> Drive<'a> {
                 directory: file.mime_type.clone().unwrap() == DIRECTORY_MIME_TYPE,
                 web_view_link: file.web_view_link.clone(),
                 owned_by_me: file.owned_by_me.unwrap_or(true),
+                last_modified: DateTime::parse_from_rfc3339(file.modified_time.clone().unwrap().as_str()).unwrap(),
+                last_accessed: DateTime::from(Utc::now()),
             };
             self.context.create_file(&file_wrapper);
         }
@@ -271,6 +272,8 @@ pub struct FileWrapper {
     pub directory: bool,
     pub web_view_link: Option<String>,
     pub owned_by_me: bool,
+    pub last_modified: DateTime<FixedOffset>,
+    pub last_accessed: DateTime<FixedOffset>,
 }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
