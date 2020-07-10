@@ -29,6 +29,7 @@ fn main() {
     let connection = get_db_connection();
     let hub = DriveHub::new(get_client(), get_authenticator());
     let mut drive = Drive::new(&hub, &connection);
+    drive.init();
     let file_wrappers = drive.get_all_files(true);
     debug!("Retrieved {} files", file_wrappers.len());
     block_on(download_all_files(&mut drive, file_wrappers));

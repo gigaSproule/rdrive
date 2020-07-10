@@ -5,9 +5,11 @@ use std::{
     path::Path,
 };
 use std::io::{BufWriter, Write};
+use std::os::raw::c_int;
 use std::path::PathBuf;
 use std::thread::JoinHandle;
 
+use chrono::{DateTime, Utc};
 use drive3::{File, Scope};
 use drive3::DriveHub;
 use glob::Pattern;
@@ -24,7 +26,6 @@ pub struct Drive<'a> {
     hub: &'a DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>,
     context: DbContext<'a>,
     config: Config,
-    files: Vec<File>,
 }
 
 impl<'a> Drive<'a> {
@@ -33,16 +34,15 @@ impl<'a> Drive<'a> {
             hub,
             context: DbContext::new(connection),
             config: Drive::get_config(),
-            files: Vec::new(),
         }
     }
 
-    fn init(&mut self) {
+    pub fn init(&mut self) {
         self.context.init();
-        self.files = self.fetch_files(None);
+        self.store_fetched_files();
     }
 
-    fn fetch_files(&'a self, page_token: Option<String>) -> Vec<File> {
+    fn fetch_files(&self, page_token: Option<String>) -> Vec<File> {
         let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink, webViewLink)";
         let mut file_list_call = self.hub.files().list().add_scope(Scope::Full).param("fields", fields);
         if page_token.is_some() {
@@ -67,21 +67,15 @@ impl<'a> Drive<'a> {
         return fetched_files;
     }
 
-    pub fn get_all_files(&mut self, owned_only: bool) -> Vec<FileWrapper> {
+    pub fn store_fetched_files(&mut self) {
+        let fetched_files = self.fetch_files(None);
         let mut files_by_id = HashMap::new();
-        if self.files.is_empty() {
-            self.init();
-        }
-        let borrowed_files: &Vec<File> = self.files.borrow();
+        let borrowed_files: &Vec<File> = fetched_files.borrow();
         for file in borrowed_files {
             files_by_id.insert(file.id.clone().unwrap(), file.clone());
         }
         self.context.conn.execute_batch("BEGIN TRANSACTION;");
-        let mut file_wrappers = Vec::new();
         for file in borrowed_files {
-            if owned_only && !file.owned_by_me.unwrap() {
-                continue;
-            }
             let path = self.get_path(&file, &files_by_id);
             if self.config.ignore.iter().any(|pattern| pattern.matches_path(path.as_path())) {
                 continue;
@@ -93,12 +87,11 @@ impl<'a> Drive<'a> {
                 path,
                 directory: file.mime_type.clone().unwrap() == DIRECTORY_MIME_TYPE,
                 web_view_link: file.web_view_link.clone(),
+                owned_by_me: file.owned_by_me.unwrap_or(true),
             };
             self.context.create_file(&file_wrapper);
-            file_wrappers.push(file_wrapper);
         }
         self.context.conn.execute_batch("COMMIT TRANSACTION;");
-        return file_wrappers;
     }
 
     fn get_path(&'a self, file: &File, files_by_id: &HashMap<String, File>) -> PathBuf {
@@ -139,6 +132,20 @@ impl<'a> Drive<'a> {
         }
         let file_name: &String = file.name.borrow().as_ref().unwrap();
         return path.join(file_name);
+    }
+
+    pub fn get_all_files(&mut self, owned_only: bool) -> Vec<FileWrapper> {
+        let all_files: Vec<FileWrapper> = self.context.get_all_files().unwrap();
+        if !owned_only {
+            return all_files;
+        }
+        let mut filtered_files = Vec::new();
+        for file in all_files {
+            if file.owned_by_me {
+                filtered_files.push(file);
+            }
+        }
+        return filtered_files;
     }
 
     pub fn create_file(&'a self, file_wrapper: FileWrapper) -> JoinHandle<()> {
@@ -263,6 +270,7 @@ pub struct FileWrapper {
     pub path: PathBuf,
     pub directory: bool,
     pub web_view_link: Option<String>,
+    pub owned_by_me: bool,
 }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
