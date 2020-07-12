@@ -48,7 +48,6 @@ fn configure_logging() -> Result<Handle, SetLoggerError> {
         .appender(Appender::builder().build("file", Box::new(file)))
         .logger(Logger::builder()
             .appender("file")
-            .appender("stdout")
             .build("rdrive", LevelFilter::Debug))
         .build(Root::builder().appender("stdout").build(LevelFilter::Warn))
         .unwrap();
