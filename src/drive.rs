@@ -71,7 +71,7 @@ impl<'a> Drive<'a> {
         self.context.conn.execute_batch("BEGIN TRANSACTION;");
         for file in borrowed_files {
             let path = self.get_path(&file, &files_by_id);
-            if self.config.ignore.iter().any(|pattern| pattern.matches_path(path.as_path())) {
+            if self.should_be_ignored(&path) {
                 continue;
             }
             let file_wrapper = FileWrapper {
@@ -88,6 +88,13 @@ impl<'a> Drive<'a> {
             self.context.create_file(&file_wrapper);
         }
         self.context.conn.execute_batch("COMMIT TRANSACTION;");
+    }
+
+    fn should_be_ignored(&mut self, path: &PathBuf) -> bool {
+        if !self.config.include.is_empty() {
+            return self.config.include.iter().any(|pattern| pattern.matches_path(path.as_path()));
+        }
+        return self.config.exclude.iter().any(|pattern| pattern.matches_path(path.as_path()));
     }
 
     fn get_path(&'a self, file: &File, files_by_id: &HashMap<String, File>) -> PathBuf {
@@ -210,18 +217,20 @@ impl<'a> Drive<'a> {
         if stored_config.is_ok() {
             let config = stored_config.unwrap();
             return Config {
-                ignore: config.ignore.iter().map(|pattern| Pattern::new(pattern).unwrap()).collect(),
+                exclude: config.exclude.iter().map(|pattern| Pattern::new(pattern).unwrap()).collect(),
+                include: config.include.iter().map(|pattern| Pattern::new(pattern).unwrap()).collect(),
                 root_dir: config.root_dir,
             };
         }
         let default_root_dir = Path::new(&<Drive>::get_home_dir()).join("rdrive");
-        let default_stored_config = StoredConfig { ignore: Vec::new(), root_dir: default_root_dir.clone() };
+        let default_stored_config = StoredConfig { exclude: Vec::new(), include: Vec::new(), root_dir: default_root_dir.clone() };
         let write_result = serde_json::to_writer_pretty(BufWriter::new(&config_file), &default_stored_config);
         if write_result.is_err() {
             error!("{}", write_result.unwrap_err());
         }
         return Config {
-            ignore: Vec::new(),
+            exclude: Vec::new(),
+            include: Vec::new(),
             root_dir: default_root_dir.clone(),
         };
     }
@@ -251,7 +260,7 @@ impl<'a> Drive<'a> {
         return match std::env::consts::OS {
             "windows" => std::env::var("LOCALAPPDATA").unwrap(),
             "linux" => std::env::var("XDG_CONFIG_HOME").unwrap_or(std::env::var("HOME").unwrap() + "/.config"),
-            "mac" => std::env::var("HOME").unwrap() + "/Library/Preferences",
+            "macos" => std::env::var("HOME").unwrap() + "/Library/Preferences",
             _ => String::new()
         };
     }
@@ -274,11 +283,13 @@ pub struct FileWrapper {
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {
-    ignore: Vec<String>,
+    exclude: Vec<String>,
+    include: Vec<String>,
     root_dir: PathBuf,
 }
 
 struct Config {
-    ignore: Vec<Pattern>,
+    exclude: Vec<Pattern>,
+    include: Vec<Pattern>,
     root_dir: PathBuf,
 }

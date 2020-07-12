@@ -97,7 +97,7 @@ fn get_base_data_path() -> String {
     return match std::env::consts::OS {
         "windows" => std::env::var("LOCALAPPDATA").unwrap(),
         "linux" => std::env::var("XDG_DATA_HOME").unwrap_or(std::env::var("HOME").unwrap() + "/.local/share"),
-        "mac" => std::env::var("HOME").unwrap() + "/Library",
+        "macos" => std::env::var("HOME").unwrap() + "/Library",
         _ => String::new()
     };
 }

@@ -18,15 +18,17 @@ By default, this will create an empty configuration file called `config.json`.
 ### Config structure
 ```json
 {
-  "ignore": [],
+  "exclude": [],
+  "include": [],
   "root_dir": ""
 }
 ```
 
-| Property | Description                    | Default Value  |
-|----------|--------------------------------|----------------|
-| ignore   | Array of ant matchable strings | `[]`           |
-| root_dir | The directory to sync to       | `$HOME/rdrive` for Linux/Mac<br>`%USERPROFILE%` for Windows|
+| Property | Description                                                                  | Default Value                                                 |
+|----------|------------------------------------------------------------------------------|---------------------------------------------------------------|
+| exclude  | Array of ant matchable strings to exclude                                    | `[]`                                                          |
+| include  | Array of ant matchable strings to include (if populated, exclude is ignored) | `[]`                                                          |
+| root_dir | The directory to sync to                                                     | `$HOME/rdrive` for Linux/Mac<br>`%USERPROFILE%` for Windows|
 
 ## Data location
 ### Linux
