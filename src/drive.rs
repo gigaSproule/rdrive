@@ -1,9 +1,4 @@
-use std::{
-    borrow::Borrow,
-    collections::HashMap,
-    io::{BufReader, Read},
-    path::Path,
-};
+use std::{borrow::Borrow, collections::HashMap, io::{BufReader, Read}, io, path::Path};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::thread::JoinHandle;
@@ -152,7 +147,6 @@ impl<'a> Drive<'a> {
     pub fn create_file(&'a self, file_wrapper: FileWrapper) -> JoinHandle<()> {
         let mut path = self.config.root_dir.clone();
         path.push(&file_wrapper.path.as_path());
-        path.push(&file_wrapper.name);
         if !path.exists() {
             let create_dirs_result = std::fs::create_dir_all(&path.parent().unwrap());
             if create_dirs_result.is_err() {
@@ -174,17 +168,19 @@ impl<'a> Drive<'a> {
 
     fn write_to_file(path: &PathBuf, mut unwrapped_response: (Response, File)) {
         debug!("Creating file {}", path.display());
-        let mut response_body = Vec::new();
-        let read_response_result = unwrapped_response.0.read_to_end(&mut response_body);
-        if read_response_result.is_err() {
-            error!("Failed to read response for file {} with error {}", path.display(), read_response_result.unwrap_err());
-            return;
-        }
         let mut file = std::fs::File::create(path.as_path()).unwrap();
-        let write_result = file.write_all(response_body.as_ref());
-        if write_result.is_err() {
-            error!("Failed to write data to file {} with error {}", path.display(), write_result.unwrap_err());
-            return;
+        let mut response = unwrapped_response.0;
+        let mut buf = [0; 128];
+        let mut written = 0;
+        loop {
+            let len = match response.read(&mut buf) {
+                Ok(0) => break,  // EOF.
+                Ok(len) => len,
+                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) => return,
+            };
+            file.write_all(&buf[..len]);
+            written += len;
         }
         match file.sync_all() {
             Ok(_) => debug!("Created file {}", path.display()),
