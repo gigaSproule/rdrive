@@ -3,6 +3,7 @@ extern crate hyper;
 extern crate hyper_rustls;
 extern crate yup_oauth2 as oauth2;
 
+use std::{env, fs};
 use std::path::Path;
 
 use drive3::DriveHub;
@@ -24,7 +25,8 @@ use crate::drive::{Drive, FileWrapper};
 mod drive;
 mod dbcontext;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let _handle = configure_logging().unwrap();
     let connection = get_db_connection();
     let hub = DriveHub::new(get_client(), get_authenticator());
@@ -88,15 +90,15 @@ fn get_db_connection() -> Connection {
     let mut db_file = Path::new(&get_base_data_path())
         .join("rdrive")
         .join("rdrive.db");
-    std::fs::create_dir_all(&db_file.parent().unwrap());
+    fs::create_dir_all(&db_file.parent().unwrap());
     return Connection::open(db_file).unwrap();
 }
 
 fn get_base_data_path() -> String {
-    return match std::env::consts::OS {
-        "windows" => std::env::var("LOCALAPPDATA").unwrap(),
-        "linux" => std::env::var("XDG_DATA_HOME").unwrap_or(std::env::var("HOME").unwrap() + "/.local/share"),
-        "macos" => std::env::var("HOME").unwrap() + "/Library",
+    return match env::consts::OS {
+        "windows" => env::var("LOCALAPPDATA").unwrap(),
+        "linux" => env::var("XDG_DATA_HOME").unwrap_or(env::var("HOME").unwrap() + "/.local/share"),
+        "macos" => env::var("HOME").unwrap() + "/Library",
         _ => String::new()
     };
 }

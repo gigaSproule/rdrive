@@ -1,7 +1,8 @@
-use std::{borrow::Borrow, collections::HashMap, io::{BufReader, Read}, io, path::Path};
+use std::{borrow::Borrow, collections::HashMap, env, fs, io::{BufReader, Read}, io, path::Path, thread};
+use std::fs::create_dir_all;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::thread::JoinHandle;
+use thread::JoinHandle;
 
 use chrono::{DateTime, FixedOffset, Utc};
 use drive3::{File, Scope};
@@ -100,19 +101,23 @@ impl<'a> Drive<'a> {
     fn get_path(&'a self, file: &File, files_by_id: &HashMap<String, File>) -> PathBuf {
         let parents = file.parents.as_ref();
         if parents.is_none() {
-            return PathBuf::new();
+            let file_name: &String = file.name.borrow().as_ref().unwrap();
+            return PathBuf::from(file_name);
         }
         let parent_id = parents.unwrap().first();
         if parent_id.is_none() {
-            return PathBuf::new();
+            let file_name: &String = file.name.borrow().as_ref().unwrap();
+            return PathBuf::from(file_name);
         }
         let mut parent = files_by_id.get(parent_id.unwrap());
         if parent.is_none() {
-            return PathBuf::new();
+            let file_name: &String = file.name.borrow().as_ref().unwrap();
+            return PathBuf::from(file_name);
         }
         let parent_name = parent.unwrap().name.as_ref();
         if parent_name.is_none() {
-            return PathBuf::new();
+            let file_name: &String = file.name.borrow().as_ref().unwrap();
+            return PathBuf::from(file_name);
         }
         let mut path = PathBuf::new();
         path.push(parent_name.unwrap());
@@ -155,39 +160,37 @@ impl<'a> Drive<'a> {
         let mut path = self.config.root_dir.clone();
         path.push(&file_wrapper.path.as_path());
         if !path.exists() {
-            let create_dirs_result = std::fs::create_dir_all(&path.parent().unwrap());
+            let create_dirs_result = create_dir_all(&path.parent().unwrap());
             if create_dirs_result.is_err() {
                 error!("Failed to create directory {} with error {}", &path.parent().unwrap().display(), create_dirs_result.unwrap_err());
-                return std::thread::spawn(|| {});
+                return thread::spawn(|| {});
             }
             if !file_wrapper.mime_type.contains("google") {
                 let response = self.hub.files().get(file_wrapper.id.as_ref()).param("alt", "media").add_scope(Scope::Full).doit();
                 if response.is_ok() {
                     let unwrapped_response = response.unwrap();
-                    return std::thread::spawn(move || <Drive>::write_to_file(&mut path, unwrapped_response));
+                    return thread::spawn(move || <Drive>::write_to_file(&mut path, unwrapped_response));
                 }
             } else {
-                return std::thread::spawn(move || <Drive>::write_to_google_file(&file_wrapper, path));
+                return thread::spawn(move || <Drive>::write_to_google_file(&file_wrapper, path));
             };
         }
-        return std::thread::spawn(|| {});
+        return thread::spawn(|| {});
     }
 
     fn write_to_file(path: &PathBuf, mut unwrapped_response: (Response, File)) {
         debug!("Creating file {}", path.display());
-        let mut file = std::fs::File::create(path.as_path()).unwrap();
+        let mut file = fs::File::create(path.as_path()).unwrap();
         let mut response = unwrapped_response.0;
         let mut buf = [0; 128];
-        let mut written = 0;
         loop {
             let len = match response.read(&mut buf) {
                 Ok(0) => break,  // EOF.
                 Ok(len) => len,
                 Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                Err(err) => return,
+                Err(_err) => return,
             };
             file.write_all(&buf[..len]);
-            written += len;
         }
         match file.sync_all() {
             Ok(_) => debug!("Created file {}", path.display()),
@@ -199,7 +202,7 @@ impl<'a> Drive<'a> {
         debug!("Creating Google file {}", path.display());
         let mut file_content: String = "#!/usr/bin/env bash\nxdg-open ".to_string();
         file_content.push_str(&file_wrapper.web_view_link.borrow().as_ref().unwrap());
-        let mut file = std::fs::File::create(path.as_path()).unwrap();
+        let mut file = fs::File::create(path.as_path()).unwrap();
         let write_result = file.write_all(file_content.as_bytes());
         if write_result.is_err() {
             error!("Failed to write data to Google file {} with error {}", path.display(), write_result.unwrap_err());
@@ -236,31 +239,31 @@ impl<'a> Drive<'a> {
     }
 
     fn get_home_dir() -> String {
-        return match std::env::consts::OS {
-            "windows" => std::env::var("USERPROFILE").unwrap(),
-            _ => std::env::var("HOME").unwrap()
+        return match env::consts::OS {
+            "windows" => env::var("USERPROFILE").unwrap(),
+            _ => env::var("HOME").unwrap()
         };
     }
 
-    fn get_config_file() -> std::fs::File {
+    fn get_config_file() -> fs::File {
         let config_file = Path::new(&Drive::get_base_config_path())
             .join("rdrive")
             .join("config.json");
         if !config_file.exists() {
-            let create_config_dir = std::fs::create_dir_all(config_file.parent().unwrap());
+            let create_config_dir = create_dir_all(config_file.parent().unwrap());
             if create_config_dir.is_err() {
                 panic!("Failed to create config path {}. {}", config_file.display(), create_config_dir.unwrap_err());
             }
-            return std::fs::File::create(config_file).unwrap();
+            return fs::File::create(config_file).unwrap();
         }
-        return std::fs::OpenOptions::new().write(true).read(true).open(config_file).unwrap();
+        return fs::OpenOptions::new().write(true).read(true).open(config_file).unwrap();
     }
 
     fn get_base_config_path() -> String {
-        return match std::env::consts::OS {
-            "windows" => std::env::var("LOCALAPPDATA").unwrap(),
-            "linux" => std::env::var("XDG_CONFIG_HOME").unwrap_or(std::env::var("HOME").unwrap() + "/.config"),
-            "macos" => std::env::var("HOME").unwrap() + "/Library/Preferences",
+        return match env::consts::OS {
+            "windows" => env::var("LOCALAPPDATA").unwrap(),
+            "linux" => env::var("XDG_CONFIG_HOME").unwrap_or(env::var("HOME").unwrap() + "/.config"),
+            "macos" => env::var("HOME").unwrap() + "/Library/Preferences",
             _ => String::new()
         };
     }
