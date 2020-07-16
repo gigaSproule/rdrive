@@ -2,6 +2,7 @@ use std::{borrow::Borrow, collections::HashMap, env, fs, io::{BufReader, Read}, 
 use std::fs::create_dir_all;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::time::SystemTime;
 use thread::JoinHandle;
 
 use chrono::{DateTime, FixedOffset, Utc};
@@ -71,7 +72,8 @@ impl<'a> Drive<'a> {
         }
         self.context.conn.execute_batch("BEGIN TRANSACTION;");
         for file in borrowed_files {
-            let path = self.get_path(&file, &files_by_id);
+            let mut path = self.config.root_dir.clone();
+            path.push(self.get_path(&file, &files_by_id));
             if self.should_be_ignored(&path) {
                 continue;
             }
@@ -84,14 +86,14 @@ impl<'a> Drive<'a> {
                 web_view_link: file.web_view_link.clone(),
                 owned_by_me: file.owned_by_me.unwrap_or(true),
                 last_modified: DateTime::parse_from_rfc3339(file.modified_time.clone().unwrap().as_str()).unwrap(),
-                last_accessed: DateTime::from(Utc::now()),
+                last_accessed: SystemTime::UNIX_EPOCH,
             };
-            self.context.create_file(&file_wrapper);
+            self.context.store_file(&file_wrapper);
         }
         self.context.conn.execute_batch("COMMIT TRANSACTION;");
     }
 
-    fn should_be_ignored(&mut self, path: &PathBuf) -> bool {
+    fn should_be_ignored(&self, path: &PathBuf) -> bool {
         if !self.config.include.is_empty() {
             return self.config.include.iter().any(|pattern| pattern.matches_path(path.as_path()));
         }
@@ -156,9 +158,20 @@ impl<'a> Drive<'a> {
         return filtered_files;
     }
 
+    /// Creates a directory, but no idea if this is even required
+    pub fn create_directory(&'a self, file_wrapper: FileWrapper) -> JoinHandle<()> {
+        let mut path = file_wrapper.path.clone();
+        if !path.exists() {
+            return thread::spawn(move || {
+                debug!("Creating directory {}", path.display());
+                create_dir_all(&path).unwrap()
+            });
+        }
+        return thread::spawn(|| {});
+    }
+
     pub fn create_file(&'a self, file_wrapper: FileWrapper) -> JoinHandle<()> {
-        let mut path = self.config.root_dir.clone();
-        path.push(&file_wrapper.path.as_path());
+        let mut path = file_wrapper.path.clone();
         if !path.exists() {
             let create_dirs_result = create_dir_all(&path.parent().unwrap());
             if create_dirs_result.is_err() {
@@ -169,10 +182,14 @@ impl<'a> Drive<'a> {
                 let response = self.hub.files().get(file_wrapper.id.as_ref()).param("alt", "media").add_scope(Scope::Full).doit();
                 if response.is_ok() {
                     let unwrapped_response = response.unwrap();
-                    return thread::spawn(move || <Drive>::write_to_file(&mut path, unwrapped_response));
+                    // return thread::spawn(move || {
+                    <Drive>::write_to_file(&path, unwrapped_response);
+                    self.context.update_last_accessed(path.metadata().unwrap().modified().unwrap());
+                    // });
+                    return thread::spawn(|| {});
                 }
             } else {
-                return thread::spawn(move || <Drive>::write_to_google_file(&file_wrapper, path));
+                return thread::spawn(move || <Drive>::write_to_google_file(&file_wrapper, &path));
             };
         }
         return thread::spawn(|| {});
@@ -198,7 +215,7 @@ impl<'a> Drive<'a> {
         }
     }
 
-    fn write_to_google_file(file_wrapper: &FileWrapper, path: PathBuf) {
+    fn write_to_google_file(file_wrapper: &FileWrapper, path: &PathBuf) {
         debug!("Creating Google file {}", path.display());
         let mut file_content: String = "#!/usr/bin/env bash\nxdg-open ".to_string();
         file_content.push_str(&file_wrapper.web_view_link.borrow().as_ref().unwrap());
@@ -281,7 +298,7 @@ pub struct FileWrapper {
     pub web_view_link: Option<String>,
     pub owned_by_me: bool,
     pub last_modified: DateTime<FixedOffset>,
-    pub last_accessed: DateTime<FixedOffset>,
+    pub last_accessed: SystemTime,
 }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]

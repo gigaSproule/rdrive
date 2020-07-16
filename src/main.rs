@@ -3,8 +3,10 @@ extern crate hyper;
 extern crate hyper_rustls;
 extern crate yup_oauth2 as oauth2;
 
-use std::{env, fs};
+use std::{env, fs, thread};
 use std::path::Path;
+use std::thread::JoinHandle;
+use std::time::{Duration, SystemTime};
 
 use drive3::DriveHub;
 use futures::{executor::block_on};
@@ -32,9 +34,33 @@ async fn main() {
     let hub = DriveHub::new(get_client(), get_authenticator());
     let mut drive = Drive::new(&hub, &connection);
     drive.init();
-    let file_wrappers = drive.get_all_files(true);
-    debug!("Retrieved {} files", file_wrappers.len());
-    block_on(download_all_files(&mut drive, file_wrappers));
+    loop {
+        let mut create_files_futures: Vec<JoinHandle<()>> = vec![];
+        let file_wrappers = drive.get_all_files(true);
+        debug!("Retrieved {} files", file_wrappers.len());
+        for file_wrapper in file_wrappers {
+            if file_wrapper.directory {
+                continue;
+            }
+            if !file_wrapper.path.exists() {
+                create_files_futures.push(drive.create_file(file_wrapper));
+            } else {
+                let local_modified_time = file_wrapper.path.metadata().unwrap().modified().unwrap().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+                let remote_modified_time = file_wrapper.last_accessed.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+                if local_modified_time > remote_modified_time {
+                    debug!("File {} has changed locally since last sync", file_wrapper.path.display());
+                } else if local_modified_time < remote_modified_time {
+                    debug!("File {} has changed on remote since last sync", file_wrapper.path.display());
+                } else {
+                    debug!("Nothing to do");
+                }
+            }
+        }
+        for create_files_future in create_files_futures {
+            create_files_future.join();
+        }
+        thread::sleep(Duration::from_secs(10))
+    }
 }
 
 fn configure_logging() -> Result<Handle, SetLoggerError> {
@@ -57,7 +83,7 @@ fn configure_logging() -> Result<Handle, SetLoggerError> {
     log4rs::init_config(config)
 }
 
-async fn download_all_files(drive: &mut Drive<'_>, file_wrappers: Vec<FileWrapper>) {
+async fn download_all_files(drive: &Drive<'_>, file_wrappers: Vec<FileWrapper>) {
     let mut download_futures = vec![];
     for file in file_wrappers {
         debug!("Path: {}, Name: {}, Directory: {}", &file.path.display(), &file.name, &file.directory);
