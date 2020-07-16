@@ -1,9 +1,8 @@
-use std::borrow::Borrow;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use chrono::{DateTime, FixedOffset, Local};
-use rusqlite::{Connection, Error, NO_PARAMS, Row, Statement};
+use chrono::{DateTime, Local};
+use rusqlite::{Connection, Error, NO_PARAMS, Row};
 
 use crate::drive::FileWrapper;
 
@@ -54,7 +53,7 @@ impl<'a> DbContext<'a> {
         return Ok(self.conn.last_insert_rowid());
     }
 
-    pub fn get_all_files(&self) -> Result<Vec<FileWrapper>, Error> {
+    pub async fn get_all_files(&self) -> Result<Vec<FileWrapper>, Error> {
         let mut statement = self.conn.prepare("SELECT * FROM file")?;
         let mut rows = statement.query(NO_PARAMS)?;
         let mut files = Vec::new();
@@ -83,12 +82,13 @@ impl<'a> DbContext<'a> {
         }
     }
 
-    pub fn update_last_accessed(&self, last_accessed: SystemTime) -> Result<(), Error> {
+    pub async fn update_last_accessed(&self, id: String, last_accessed: SystemTime) -> Result<(), Error> {
         let last_accessed_converted: DateTime<Local> = DateTime::from(last_accessed);
-        let mut statement = self.conn.prepare("")?;
+        let mut statement = self.conn.prepare("UPDATE file SET last_accessed = :last_accessed WHERE id = :id")?;
         statement.execute_named(
             &[
-                (":last_accessed", &last_accessed_converted.to_rfc3339())
+                (":last_accessed", &last_accessed_converted.to_rfc3339()),
+                (":id", &id)
             ]
         )?;
         return Ok(());

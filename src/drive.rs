@@ -1,11 +1,13 @@
 use std::{borrow::Borrow, collections::HashMap, env, fs, io::{BufReader, Read}, io, path::Path, thread};
 use std::fs::create_dir_all;
-use std::io::{BufWriter, Write};
+use std::future::Future;
+use std::io::{BufWriter, Error, Write};
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::time::SystemTime;
 use thread::JoinHandle;
 
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, FixedOffset};
 use drive3::{File, Scope};
 use drive3::DriveHub;
 use glob::Pattern;
@@ -33,9 +35,9 @@ impl<'a> Drive<'a> {
         }
     }
 
-    pub fn init(&mut self) {
+    pub async fn init(&mut self) {
         self.context.init();
-        self.store_fetched_files();
+        self.store_fetched_files().await;
     }
 
     fn fetch_files(&self, page_token: Option<String>) -> Vec<File> {
@@ -63,14 +65,14 @@ impl<'a> Drive<'a> {
         return fetched_files;
     }
 
-    pub fn store_fetched_files(&mut self) {
+    pub async fn store_fetched_files(&mut self) -> Result<(), rusqlite::Error> {
         let fetched_files = self.fetch_files(None);
         let mut files_by_id = HashMap::new();
         let borrowed_files: &Vec<File> = fetched_files.borrow();
         for file in borrowed_files {
             files_by_id.insert(file.id.clone().unwrap(), file.clone());
         }
-        self.context.conn.execute_batch("BEGIN TRANSACTION;");
+        self.context.conn.execute_batch("BEGIN TRANSACTION;")?;
         for file in borrowed_files {
             let mut path = self.config.root_dir.clone();
             path.push(self.get_path(&file, &files_by_id));
@@ -88,9 +90,10 @@ impl<'a> Drive<'a> {
                 last_modified: DateTime::parse_from_rfc3339(file.modified_time.clone().unwrap().as_str()).unwrap(),
                 last_accessed: SystemTime::UNIX_EPOCH,
             };
-            self.context.store_file(&file_wrapper);
+            self.context.store_file(&file_wrapper)?;
         }
-        self.context.conn.execute_batch("COMMIT TRANSACTION;");
+        self.context.conn.execute_batch("COMMIT TRANSACTION;")?;
+        Ok(())
     }
 
     fn should_be_ignored(&self, path: &PathBuf) -> bool {
@@ -144,10 +147,10 @@ impl<'a> Drive<'a> {
         return path.join(file_name);
     }
 
-    pub fn get_all_files(&mut self, owned_only: bool) -> Vec<FileWrapper> {
-        let all_files: Vec<FileWrapper> = self.context.get_all_files().unwrap();
+    pub async fn get_all_files(&mut self, owned_only: bool) -> Result<Vec<FileWrapper>, Error> {
+        let all_files: Vec<FileWrapper> = self.context.get_all_files().await.unwrap();
         if !owned_only {
-            return all_files;
+            return Ok(all_files);
         }
         let mut filtered_files = Vec::new();
         for file in all_files {
@@ -155,12 +158,12 @@ impl<'a> Drive<'a> {
                 filtered_files.push(file);
             }
         }
-        return filtered_files;
+        return Ok(filtered_files);
     }
 
     /// Creates a directory, but no idea if this is even required
     pub fn create_directory(&'a self, file_wrapper: FileWrapper) -> JoinHandle<()> {
-        let mut path = file_wrapper.path.clone();
+        let path = file_wrapper.path.clone();
         if !path.exists() {
             return thread::spawn(move || {
                 debug!("Creating directory {}", path.display());
@@ -170,34 +173,30 @@ impl<'a> Drive<'a> {
         return thread::spawn(|| {});
     }
 
-    pub fn create_file(&'a self, file_wrapper: FileWrapper) -> JoinHandle<()> {
-        let mut path = file_wrapper.path.clone();
+    pub async fn create_file(&'a self, file_wrapper: FileWrapper) -> Result<(), Error> {
+        let path = file_wrapper.path.clone();
         if !path.exists() {
             let create_dirs_result = create_dir_all(&path.parent().unwrap());
             if create_dirs_result.is_err() {
                 error!("Failed to create directory {} with error {}", &path.parent().unwrap().display(), create_dirs_result.unwrap_err());
-                return thread::spawn(|| {});
             }
             if !file_wrapper.mime_type.contains("google") {
                 let response = self.hub.files().get(file_wrapper.id.as_ref()).param("alt", "media").add_scope(Scope::Full).doit();
                 if response.is_ok() {
                     let unwrapped_response = response.unwrap();
-                    // return thread::spawn(move || {
-                    <Drive>::write_to_file(&path, unwrapped_response);
-                    self.context.update_last_accessed(path.metadata().unwrap().modified().unwrap());
-                    // });
-                    return thread::spawn(|| {});
+                    <Drive>::write_to_file(&path, unwrapped_response).await?;
                 }
             } else {
-                return thread::spawn(move || <Drive>::write_to_google_file(&file_wrapper, &path));
+                <Drive>::write_to_google_file(&file_wrapper, &path).await?;
             };
+            self.context.update_last_accessed(file_wrapper.id, path.metadata().unwrap().modified().unwrap()).await.unwrap();
         }
-        return thread::spawn(|| {});
+        Ok(())
     }
 
-    fn write_to_file(path: &PathBuf, mut unwrapped_response: (Response, File)) {
+    async fn write_to_file(path: &PathBuf, unwrapped_response: (Response, File)) -> Result<(), Error> {
         debug!("Creating file {}", path.display());
-        let mut file = fs::File::create(path.as_path()).unwrap();
+        let mut file = fs::File::create(path.as_path())?;
         let mut response = unwrapped_response.0;
         let mut buf = [0; 128];
         loop {
@@ -205,29 +204,42 @@ impl<'a> Drive<'a> {
                 Ok(0) => break,  // EOF.
                 Ok(len) => len,
                 Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_err) => return,
+                Err(err) => return Err(err),
             };
             file.write_all(&buf[..len]);
         }
         match file.sync_all() {
-            Ok(_) => debug!("Created file {}", path.display()),
-            Err(error) => error!("Failed to sync file {} with error {}", path.display(), error)
+            Ok(_) => {
+                debug!("Created file {}", path.display());
+                Ok(())
+            }
+            Err(error) => {
+                error!("Failed to sync file {} with error {}", path.display(), error);
+                Err(error)
+            }
         }
     }
 
-    fn write_to_google_file(file_wrapper: &FileWrapper, path: &PathBuf) {
+    async fn write_to_google_file(file_wrapper: &FileWrapper, path: &PathBuf) -> Result<(), Error> {
         debug!("Creating Google file {}", path.display());
         let mut file_content: String = "#!/usr/bin/env bash\nxdg-open ".to_string();
         file_content.push_str(&file_wrapper.web_view_link.borrow().as_ref().unwrap());
-        let mut file = fs::File::create(path.as_path()).unwrap();
+        let mut file = fs::File::create(path.as_path())?;
         let write_result = file.write_all(file_content.as_bytes());
         if write_result.is_err() {
-            error!("Failed to write data to Google file {} with error {}", path.display(), write_result.unwrap_err());
-            return;
+            let error = write_result.unwrap_err();
+            error!("Failed to write data to Google file {} with error {}", path.display(), &error);
+            return Err(error);
         }
         match file.sync_all() {
-            Ok(_) => debug!("Created Google file {}", path.display()),
-            Err(error) => error!("Failed to sync Google file {} with error {}", path.display(), error)
+            Ok(_) => {
+                debug!("Created Google file {}", path.display());
+                Ok(())
+            }
+            Err(error) => {
+                error!("Failed to sync Google file {} with error {}", path.display(), error);
+                Err(error)
+            }
         }
     }
 

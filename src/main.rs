@@ -5,11 +5,9 @@ extern crate yup_oauth2 as oauth2;
 
 use std::{env, fs, thread};
 use std::path::Path;
-use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
 use drive3::DriveHub;
-use futures::{executor::block_on};
 use hyper::Client;
 use hyper::net::HttpsConnector;
 use hyper_rustls::TlsClient;
@@ -22,7 +20,7 @@ use log4rs::Handle;
 use oauth2::{ApplicationSecret, Authenticator, DefaultAuthenticatorDelegate, DiskTokenStorage};
 use rusqlite::Connection;
 
-use crate::drive::{Drive, FileWrapper};
+use crate::drive::Drive;
 
 mod drive;
 mod dbcontext;
@@ -33,10 +31,10 @@ async fn main() {
     let connection = get_db_connection();
     let hub = DriveHub::new(get_client(), get_authenticator());
     let mut drive = Drive::new(&hub, &connection);
-    drive.init();
+    drive.init().await;
     loop {
-        let mut create_files_futures: Vec<JoinHandle<()>> = vec![];
-        let file_wrappers = drive.get_all_files(true);
+        let mut create_files_futures = vec![];
+        let file_wrappers = drive.get_all_files(true).await.unwrap();
         debug!("Retrieved {} files", file_wrappers.len());
         for file_wrapper in file_wrappers {
             if file_wrapper.directory {
@@ -57,7 +55,7 @@ async fn main() {
             }
         }
         for create_files_future in create_files_futures {
-            create_files_future.join();
+            create_files_future.await;
         }
         thread::sleep(Duration::from_secs(10))
     }
@@ -83,18 +81,18 @@ fn configure_logging() -> Result<Handle, SetLoggerError> {
     log4rs::init_config(config)
 }
 
-async fn download_all_files(drive: &Drive<'_>, file_wrappers: Vec<FileWrapper>) {
-    let mut download_futures = vec![];
-    for file in file_wrappers {
-        debug!("Path: {}, Name: {}, Directory: {}", &file.path.display(), &file.name, &file.directory);
-        if !file.directory {
-            download_futures.push(drive.create_file(file.clone()));
-        }
-    }
-    for future in download_futures {
-        future.join().expect("Failed to join to future");
-    }
-}
+// async fn download_all_files(drive: &Drive<'_>, file_wrappers: Vec<FileWrapper>) {
+//     let mut download_futures = vec![];
+//     for file in file_wrappers {
+//         debug!("Path: {}, Name: {}, Directory: {}", &file.path.display(), &file.name, &file.directory);
+//         if !file.directory {
+//             download_futures.push(drive.create_file(file.clone()));
+//         }
+//     }
+//     for future in download_futures {
+//         future.join().expect("Failed to join to future");
+//     }
+// }
 
 fn get_client() -> Client {
     Client::with_connector(HttpsConnector::new(TlsClient::new()))
@@ -113,7 +111,7 @@ fn get_authenticator() -> Authenticator<DefaultAuthenticatorDelegate, DiskTokenS
 }
 
 fn get_db_connection() -> Connection {
-    let mut db_file = Path::new(&get_base_data_path())
+    let db_file = Path::new(&get_base_data_path())
         .join("rdrive")
         .join("rdrive.db");
     fs::create_dir_all(&db_file.parent().unwrap());
