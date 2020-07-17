@@ -1,7 +1,8 @@
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Local};
+use log::debug;
 use rusqlite::{Connection, Error, NO_PARAMS, Row};
 
 use crate::drive::FileWrapper;
@@ -84,6 +85,7 @@ impl<'a> DbContext<'a> {
 
     pub async fn update_last_accessed(&self, id: String, last_accessed: SystemTime) -> Result<(), Error> {
         let last_accessed_converted: DateTime<Local> = DateTime::from(last_accessed);
+        debug!("Updating last_accessed to {}", &last_accessed_converted.to_rfc3339());
         let mut statement = self.conn.prepare("UPDATE file SET last_accessed = :last_accessed WHERE id = :id")?;
         statement.execute_named(
             &[

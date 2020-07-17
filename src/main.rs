@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use drive3::DriveHub;
+use futures::executor::block_on;
 use hyper::Client;
 use hyper::net::HttpsConnector;
 use hyper_rustls::TlsClient;
@@ -33,7 +34,7 @@ async fn main() {
     let mut drive = Drive::new(&hub, &connection);
     drive.init().await;
     loop {
-        let mut create_files_futures = vec![];
+        let mut file_futures = vec![];
         let file_wrappers = drive.get_all_files(true).await.unwrap();
         debug!("Retrieved {} files", file_wrappers.len());
         for file_wrapper in file_wrappers {
@@ -41,23 +42,25 @@ async fn main() {
                 continue;
             }
             if !file_wrapper.path.exists() {
-                create_files_futures.push(drive.create_file(file_wrapper));
+                file_futures.push(drive.create_file(file_wrapper));
             } else {
                 let local_modified_time = file_wrapper.path.metadata().unwrap().modified().unwrap().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
                 let remote_modified_time = file_wrapper.last_accessed.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-                if local_modified_time > remote_modified_time {
+                if local_modified_time > remote_modified_time && remote_modified_time > 0 {
                     debug!("File {} has changed locally since last sync", file_wrapper.path.display());
-                } else if local_modified_time < remote_modified_time {
+                    // Upload file
+                    // Update database
+                } else if local_modified_time < remote_modified_time || remote_modified_time == 0 {
                     debug!("File {} has changed on remote since last sync", file_wrapper.path.display());
+                    file_futures.push(drive.create_file(file_wrapper));
                 } else {
-                    debug!("Nothing to do");
+                    debug!("Nothing to do for file {}", file_wrapper.path.display());
                 }
             }
         }
-        for create_files_future in create_files_futures {
-            create_files_future.await;
-        }
-        thread::sleep(Duration::from_secs(10))
+        let all = futures::future::join_all(file_futures);
+        block_on(all);
+        thread::sleep(Duration::from_secs(30));
     }
 }
 

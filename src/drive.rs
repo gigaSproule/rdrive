@@ -189,7 +189,11 @@ impl<'a> Drive<'a> {
             } else {
                 <Drive>::write_to_google_file(&file_wrapper, &path).await?;
             };
-            self.context.update_last_accessed(file_wrapper.id, path.metadata().unwrap().modified().unwrap()).await.unwrap();
+            let update_result = self.context.update_last_accessed(file_wrapper.id, path.metadata().unwrap().modified().unwrap()).await;
+            match update_result {
+                Ok(_) => debug!("Update was successful"),
+                Err(error) => error!("Something went wrong during update {}", error)
+            }
         }
         Ok(())
     }
