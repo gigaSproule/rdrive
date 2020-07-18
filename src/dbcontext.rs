@@ -1,9 +1,10 @@
+use std::borrow::Borrow;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use chrono::{DateTime, Local};
-use log::debug;
-use rusqlite::{Connection, Error, NO_PARAMS, Row};
+use log::{debug, error};
+use rusqlite::{Connection, Error, NO_PARAMS, Row, Statement};
 
 use crate::drive::FileWrapper;
 
@@ -18,7 +19,7 @@ impl<'a> DbContext<'a> {
         };
     }
 
-    pub fn init(&self) -> Result<(), Error> {
+    pub async fn init(&self) -> Result<(), Error> {
         self.conn.execute("CREATE TABLE IF NOT EXISTS file (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -33,25 +34,42 @@ impl<'a> DbContext<'a> {
         Ok(())
     }
 
-    pub fn store_file(&self, file_wrapper: &FileWrapper) -> Result<i64, Error> {
+    pub async fn store_file(&self, file_wrapper: &FileWrapper) -> Result<i64, Error> {
         let last_accessed: SystemTime = file_wrapper.last_accessed;
         let last_accessed_converted: DateTime<Local> = DateTime::from(last_accessed);
-        let mut statement = self.conn.prepare("INSERT INTO file (id, name, mime_type, path, directory, web_view_link, owned_by_me, last_modified, last_accessed) VALUES (:id, :name, :mime_type, :path, :directory, :web_view_link, :owned_by_me, :last_modified, :last_accessed)")?;
-        statement
-            .execute_named(
-                &[
-                    (":id", &file_wrapper.id),
-                    (":name", &file_wrapper.name),
-                    (":mime_type", &file_wrapper.mime_type),
-                    (":path", &file_wrapper.path.to_str().unwrap()),
-                    (":directory", &file_wrapper.directory),
-                    (":web_view_link", &file_wrapper.web_view_link),
-                    (":owned_by_me", &file_wrapper.owned_by_me),
-                    (":last_modified", &file_wrapper.last_modified.to_rfc3339()),
-                    (":last_accessed", &last_accessed_converted.to_rfc3339())
-                ]
-            )?;
+        let stored_file = self.get_file(&file_wrapper.id).await;
+        if stored_file.borrow().is_some() && stored_file.borrow().as_ref().unwrap().last_modified == file_wrapper.last_modified {
+            return Ok(-1);
+        }
+        let mut statement: Statement = if stored_file.is_some() {
+            self.conn.prepare("UPDATE file SET name = :name, mime_type = :mime_type, path = :path, directory = :directory, web_view_link = :web_view_link, owned_by_me = :owned_by_me, last_modified = :last_modified, last_accessed = :last_accessed WHERE id = :id")?
+        } else {
+            self.conn.prepare("INSERT INTO file (id, name, mime_type, path, directory, web_view_link, owned_by_me, last_modified, last_accessed) VALUES (:id, :name, :mime_type, :path, :directory, :web_view_link, :owned_by_me, :last_modified, :last_accessed)")?
+        };
+        statement.execute_named(
+            &[
+                (":id", &file_wrapper.id),
+                (":name", &file_wrapper.name),
+                (":mime_type", &file_wrapper.mime_type),
+                (":path", &file_wrapper.path.to_str().unwrap()),
+                (":directory", &file_wrapper.directory),
+                (":web_view_link", &file_wrapper.web_view_link),
+                (":owned_by_me", &file_wrapper.owned_by_me),
+                (":last_modified", &file_wrapper.last_modified.to_rfc3339()),
+                (":last_accessed", &last_accessed_converted.to_rfc3339())
+            ]
+        )?;
         return Ok(self.conn.last_insert_rowid());
+    }
+
+    pub async fn get_file(&self, id: &String) -> Option<FileWrapper> {
+        let mut statement = self.conn.prepare("SELECT * FROM file where id = :id LIMIT 1").unwrap();
+        let mut rows = statement.query_named(&[(":id", &id)]).unwrap();
+        let result = rows.next().unwrap();
+        match result {
+            Some(row) => Some(DbContext::convert_to_file_wrapper(row)),
+            _ => None
+        }
     }
 
     pub async fn get_all_files(&self) -> Result<Vec<FileWrapper>, Error> {
@@ -86,13 +104,23 @@ impl<'a> DbContext<'a> {
     pub async fn update_last_accessed(&self, id: String, last_accessed: SystemTime) -> Result<(), Error> {
         let last_accessed_converted: DateTime<Local> = DateTime::from(last_accessed);
         debug!("Updating last_accessed to {}", &last_accessed_converted.to_rfc3339());
+        debug!("Autocommit: {}", self.conn.is_autocommit());
         let mut statement = self.conn.prepare("UPDATE file SET last_accessed = :last_accessed WHERE id = :id")?;
-        statement.execute_named(
+        let update_result = statement.execute_named(
             &[
                 (":last_accessed", &last_accessed_converted.to_rfc3339()),
                 (":id", &id)
             ]
-        )?;
-        return Ok(());
+        );
+        match update_result {
+            Ok(num_rows) => {
+                debug!("Update affected {} rows", num_rows);
+                Ok(())
+            }
+            Err(error) => {
+                error!("Error occured when updating the last_accessed - {}", error);
+                Err(error)
+            }
+        }
     }
 }

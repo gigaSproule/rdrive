@@ -42,15 +42,19 @@ async fn main() {
                 continue;
             }
             if !file_wrapper.path.exists() {
+                debug!("Creating file {} for the first time", file_wrapper.path.display());
                 file_futures.push(drive.create_file(file_wrapper));
             } else {
                 let local_modified_time = file_wrapper.path.metadata().unwrap().modified().unwrap().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
                 let remote_modified_time = file_wrapper.last_accessed.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-                if local_modified_time > remote_modified_time && remote_modified_time > 0 {
+                if remote_modified_time == 0 {
+                    debug!("Remote modified time wasn't updated properly for file {} when it was created", file_wrapper.path.display());
+                    file_futures.push(drive.create_file(file_wrapper));
+                } else if local_modified_time > remote_modified_time {
                     debug!("File {} has changed locally since last sync", file_wrapper.path.display());
                     // Upload file
                     // Update database
-                } else if local_modified_time < remote_modified_time || remote_modified_time == 0 {
+                } else if local_modified_time < remote_modified_time {
                     debug!("File {} has changed on remote since last sync", file_wrapper.path.display());
                     file_futures.push(drive.create_file(file_wrapper));
                 } else {
@@ -117,7 +121,7 @@ fn get_db_connection() -> Connection {
     let db_file = Path::new(&get_base_data_path())
         .join("rdrive")
         .join("rdrive.db");
-    fs::create_dir_all(&db_file.parent().unwrap());
+    fs::create_dir_all(&db_file.parent().unwrap()).unwrap();
     return Connection::open(db_file).unwrap();
 }
 

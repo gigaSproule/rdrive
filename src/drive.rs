@@ -1,9 +1,7 @@
 use std::{borrow::Borrow, collections::HashMap, env, fs, io::{BufReader, Read}, io, path::Path, thread};
 use std::fs::create_dir_all;
-use std::future::Future;
 use std::io::{BufWriter, Error, Write};
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::time::SystemTime;
 use thread::JoinHandle;
 
@@ -36,8 +34,8 @@ impl<'a> Drive<'a> {
     }
 
     pub async fn init(&mut self) {
-        self.context.init();
-        self.store_fetched_files().await;
+        self.context.init().await.unwrap();
+        self.store_fetched_files().await.unwrap();
     }
 
     fn fetch_files(&self, page_token: Option<String>) -> Vec<File> {
@@ -65,14 +63,14 @@ impl<'a> Drive<'a> {
         return fetched_files;
     }
 
-    pub async fn store_fetched_files(&mut self) -> Result<(), rusqlite::Error> {
+    pub async fn store_fetched_files(&self) -> Result<(), rusqlite::Error> {
         let fetched_files = self.fetch_files(None);
         let mut files_by_id = HashMap::new();
         let borrowed_files: &Vec<File> = fetched_files.borrow();
         for file in borrowed_files {
             files_by_id.insert(file.id.clone().unwrap(), file.clone());
         }
-        self.context.conn.execute_batch("BEGIN TRANSACTION;")?;
+        // self.context.conn.execute_batch("BEGIN TRANSACTION;")?;
         for file in borrowed_files {
             let mut path = self.config.root_dir.clone();
             path.push(self.get_path(&file, &files_by_id));
@@ -90,9 +88,9 @@ impl<'a> Drive<'a> {
                 last_modified: DateTime::parse_from_rfc3339(file.modified_time.clone().unwrap().as_str()).unwrap(),
                 last_accessed: SystemTime::UNIX_EPOCH,
             };
-            self.context.store_file(&file_wrapper)?;
+            self.context.store_file(&file_wrapper).await?;
         }
-        self.context.conn.execute_batch("COMMIT TRANSACTION;")?;
+        // self.context.conn.execute_batch("COMMIT TRANSACTION;")?;
         Ok(())
     }
 
@@ -175,22 +173,24 @@ impl<'a> Drive<'a> {
 
     pub async fn create_file(&'a self, file_wrapper: FileWrapper) -> Result<(), Error> {
         let path = file_wrapper.path.clone();
-        if !path.exists() {
-            let create_dirs_result = create_dir_all(&path.parent().unwrap());
-            if create_dirs_result.is_err() {
-                error!("Failed to create directory {} with error {}", &path.parent().unwrap().display(), create_dirs_result.unwrap_err());
-            }
-            if !file_wrapper.mime_type.contains("google") {
-                let response = self.hub.files().get(file_wrapper.id.as_ref()).param("alt", "media").add_scope(Scope::Full).doit();
-                if response.is_ok() {
-                    let unwrapped_response = response.unwrap();
-                    <Drive>::write_to_file(&path, unwrapped_response).await?;
-                }
-            } else {
-                <Drive>::write_to_google_file(&file_wrapper, &path).await?;
-            };
+        let create_dirs_result = create_dir_all(&path.parent().unwrap());
+        if create_dirs_result.is_err() {
+            error!("Failed to create directory {} with error {}", &path.parent().unwrap().display(), create_dirs_result.unwrap_err());
         }
-        let update_result = self.context.update_last_accessed(file_wrapper.id, path.metadata().unwrap().modified().unwrap()).await;
+        if !file_wrapper.mime_type.contains("google") {
+            let response = self.hub.files().get(file_wrapper.id.as_ref()).param("alt", "media").add_scope(Scope::Full).doit();
+            if response.is_ok() {
+                let unwrapped_response = response.unwrap();
+                <Drive>::write_to_file(&path, unwrapped_response).await?;
+            }
+        } else {
+            <Drive>::write_to_google_file(&file_wrapper, &path).await?;
+        };
+        let metadata = path.metadata();
+        if metadata.is_err() {
+            error!("Somehow the file {} doesn't exist", path.display());
+        }
+        let update_result = self.context.update_last_accessed(file_wrapper.id, metadata.unwrap().modified().unwrap()).await;
         match update_result {
             Ok(_) => debug!("Updated last accessed for {} successfully", file_wrapper.path.display()),
             Err(error) => error!("Something went wrong during update for {}: {}", file_wrapper.path.display(), error)
@@ -210,7 +210,7 @@ impl<'a> Drive<'a> {
                 Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(err) => return Err(err),
             };
-            file.write_all(&buf[..len]);
+            file.write_all(&buf[..len])?;
         }
         match file.sync_all() {
             Ok(_) => {
