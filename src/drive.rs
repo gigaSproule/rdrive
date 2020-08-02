@@ -1,11 +1,11 @@
 use std::{borrow::Borrow, collections::HashMap, env, fs, io::{BufReader, Read}, io, path::Path, thread};
-use std::fs::create_dir_all;
+use std::fs::{create_dir_all, read_dir};
 use std::io::{BufWriter, Error, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
 use thread::JoinHandle;
 
-use chrono::{DateTime, FixedOffset};
+use chrono::{DateTime, FixedOffset, Local};
 use drive3::{File, Scope};
 use drive3::DriveHub;
 use glob::Pattern;
@@ -18,14 +18,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::dbcontext::DbContext;
 
-pub struct Drive<'a> {
-    hub: &'a DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>,
-    context: DbContext<'a>,
+pub struct Drive {
+    hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>,
+    context: DbContext,
     config: Config,
 }
 
-impl<'a> Drive<'a> {
-    pub fn new(hub: &'a DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>, connection: &'a Connection) -> Drive<'a> {
+impl Drive {
+    pub fn new(hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>, connection: Connection) -> Drive {
         Drive {
             hub,
             context: DbContext::new(connection),
@@ -33,13 +33,13 @@ impl<'a> Drive<'a> {
         }
     }
 
-    pub async fn init(&mut self) {
-        self.context.init().await.unwrap();
-        self.store_fetched_files().await.unwrap();
+    pub fn init(&self) {
+        self.context.init().unwrap();
+        self.store_fetched_files().unwrap();
     }
 
     fn fetch_files(&self, page_token: Option<String>) -> Vec<File> {
-        let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink, webViewLink, modifiedTime)";
+        let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink, webViewLink, modifiedTime, trashed)";
         let mut file_list_call = self.hub.files().list().add_scope(Scope::Full).param("fields", fields);
         if page_token.is_some() {
             file_list_call = file_list_call.page_token(page_token.unwrap().as_str())
@@ -63,34 +63,24 @@ impl<'a> Drive<'a> {
         return fetched_files;
     }
 
-    pub async fn store_fetched_files(&self) -> Result<(), rusqlite::Error> {
+    pub fn store_fetched_files(&self) -> Result<(), rusqlite::Error> {
         let fetched_files = self.fetch_files(None);
         let mut files_by_id = HashMap::new();
         let borrowed_files: &Vec<File> = fetched_files.borrow();
         for file in borrowed_files {
             files_by_id.insert(file.id.clone().unwrap(), file.clone());
         }
-        // self.context.conn.execute_batch("BEGIN TRANSACTION;")?;
+        self.context.conn.execute_batch("BEGIN TRANSACTION;")?;
         for file in borrowed_files {
             let mut path = self.config.root_dir.clone();
             path.push(self.get_path(&file, &files_by_id));
             if self.should_be_ignored(&path) {
                 continue;
             }
-            let file_wrapper = FileWrapper {
-                id: file.id.borrow().as_ref().unwrap().to_owned(),
-                name: file.name.borrow().as_ref().unwrap().to_owned(),
-                mime_type: file.mime_type.borrow().as_ref().unwrap().to_owned(),
-                path,
-                directory: file.mime_type.clone().unwrap() == DIRECTORY_MIME_TYPE,
-                web_view_link: file.web_view_link.clone(),
-                owned_by_me: file.owned_by_me.unwrap_or(true),
-                last_modified: DateTime::parse_from_rfc3339(file.modified_time.clone().unwrap().as_str()).unwrap(),
-                last_accessed: SystemTime::UNIX_EPOCH,
-            };
-            self.context.store_file(&file_wrapper).await?;
+            let file_wrapper = Drive::convert_to_file_wrapper(file, &mut path);
+            self.context.store_file(&file_wrapper)?;
         }
-        // self.context.conn.execute_batch("COMMIT TRANSACTION;")?;
+        self.context.conn.execute_batch("COMMIT TRANSACTION;")?;
         Ok(())
     }
 
@@ -101,10 +91,10 @@ impl<'a> Drive<'a> {
         return self.config.exclude.iter().any(|pattern| pattern.matches_path(path.as_path()));
     }
 
-    fn get_path(&'a self, file: &File, files_by_id: &HashMap<String, File>) -> PathBuf {
+    fn get_path(&self, file: &File, files_by_id: &HashMap<String, File>) -> PathBuf {
         let parents = file.parents.as_ref();
         if parents.is_none() {
-            let file_name: &String = file.name.borrow().as_ref().unwrap();
+            let file_name: &String = file.name.as_ref().unwrap();
             return PathBuf::from(file_name);
         }
         let parent_id = parents.unwrap().first();
@@ -135,8 +125,8 @@ impl<'a> Drive<'a> {
                 } else {
                     parent = files_by_id.get(parent_id.unwrap());
                     if parent.is_some() {
-                        let parent_name: String = parent.unwrap().name.clone().unwrap();
-                        path = Path::new(&parent_name).join(&path.as_path());
+                        let parent_name = parent.unwrap().name.as_ref().unwrap();
+                        path = Path::new(parent_name).join(&path.as_path());
                     }
                 }
             }
@@ -145,8 +135,8 @@ impl<'a> Drive<'a> {
         return path.join(file_name);
     }
 
-    pub async fn get_all_files(&mut self, owned_only: bool) -> Result<Vec<FileWrapper>, Error> {
-        let all_files: Vec<FileWrapper> = self.context.get_all_files().await.unwrap();
+    pub fn get_all_files(&self, owned_only: bool) -> Result<Vec<FileWrapper>, Error> {
+        let all_files: Vec<FileWrapper> = self.context.get_all_files().unwrap();
         if !owned_only {
             return Ok(all_files);
         }
@@ -159,19 +149,7 @@ impl<'a> Drive<'a> {
         return Ok(filtered_files);
     }
 
-    /// Creates a directory, but no idea if this is even required
-    pub fn create_directory(&'a self, file_wrapper: FileWrapper) -> JoinHandle<()> {
-        let path = file_wrapper.path.clone();
-        if !path.exists() {
-            return thread::spawn(move || {
-                debug!("Creating directory {}", path.display());
-                create_dir_all(&path).unwrap()
-            });
-        }
-        return thread::spawn(|| {});
-    }
-
-    pub async fn create_file(&'a self, file_wrapper: FileWrapper) -> Result<(), Error> {
+    pub fn create_file(&self, file_wrapper: &FileWrapper) -> Result<(), Error> {
         let path = file_wrapper.path.clone();
         let create_dirs_result = create_dir_all(&path.parent().unwrap());
         if create_dirs_result.is_err() {
@@ -181,16 +159,16 @@ impl<'a> Drive<'a> {
             let response = self.hub.files().get(file_wrapper.id.as_ref()).param("alt", "media").add_scope(Scope::Full).doit();
             if response.is_ok() {
                 let unwrapped_response = response.unwrap();
-                <Drive>::write_to_file(&path, unwrapped_response).await?;
+                <Drive>::write_to_file(&path, unwrapped_response)?;
             }
         } else {
-            <Drive>::write_to_google_file(&file_wrapper, &path).await?;
+            <Drive>::write_to_google_file(&file_wrapper, &path)?;
         };
         let metadata = path.metadata();
         if metadata.is_err() {
             error!("Somehow the file {} doesn't exist", path.display());
         }
-        let update_result = self.context.update_last_accessed(file_wrapper.id, metadata.unwrap().modified().unwrap()).await;
+        let update_result = self.context.update_last_accessed(&file_wrapper.id, &metadata.unwrap().modified().unwrap());
         match update_result {
             Ok(_) => debug!("Updated last accessed for {} successfully", file_wrapper.path.display()),
             Err(error) => error!("Something went wrong during update for {}: {}", file_wrapper.path.display(), error)
@@ -198,11 +176,11 @@ impl<'a> Drive<'a> {
         Ok(())
     }
 
-    async fn write_to_file(path: &PathBuf, unwrapped_response: (Response, File)) -> Result<(), Error> {
+    fn write_to_file(path: &PathBuf, unwrapped_response: (Response, File)) -> Result<(), Error> {
         debug!("Creating file {}", path.display());
         let mut file = fs::File::create(path.as_path())?;
         let mut response = unwrapped_response.0;
-        let mut buf = [0; 128];
+        let mut buf = [0; 1048576];
         loop {
             let len = match response.read(&mut buf) {
                 Ok(0) => break,  // EOF.
@@ -224,7 +202,7 @@ impl<'a> Drive<'a> {
         }
     }
 
-    async fn write_to_google_file(file_wrapper: &FileWrapper, path: &PathBuf) -> Result<(), Error> {
+    fn write_to_google_file(file_wrapper: &FileWrapper, path: &PathBuf) -> Result<(), Error> {
         debug!("Creating Google file {}", path.display());
         let mut file_content: String = "#!/usr/bin/env bash\nxdg-open ".to_string();
         file_content.push_str(&file_wrapper.web_view_link.borrow().as_ref().unwrap());
@@ -244,6 +222,89 @@ impl<'a> Drive<'a> {
                 error!("Failed to sync Google file {} with error {}", path.display(), error);
                 Err(error)
             }
+        }
+    }
+
+    pub fn get_local_files(&self) -> Result<Vec<FileWrapper>, Error> {
+        read_dir(&self.config.root_dir)?
+            .map(|res| {
+                res.map(|e| {
+                    let metadata = e.metadata().unwrap();
+                    let last_modified = <DateTime<Local>>::from(metadata.modified().unwrap());
+                    let mime_type = if e.file_type().unwrap().is_dir() {
+                        DIRECTORY_MIME_TYPE.to_string()
+                    } else {
+                        mime_guess::from_path(e.path().as_path()).first().unwrap_or(mime::TEXT_PLAIN).essence_str().to_string()
+                    };
+                    FileWrapper {
+                        id: String::new(),
+                        name: e.file_name().into_string().unwrap(),
+                        mime_type,
+                        path: e.path(),
+                        directory: e.file_type().unwrap().is_dir(),
+                        web_view_link: None,
+                        owned_by_me: true,
+                        last_modified: <DateTime<FixedOffset>>::from(last_modified),
+                        last_accessed: metadata.modified().unwrap(),
+                        trashed: false,
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, io::Error>>()
+    }
+
+    pub fn upload_file(&self, file_wrapper: &FileWrapper) -> Result<(), drive3::Error> {
+        let fields = "id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink, webViewLink, modifiedTime, trashed";
+        let response = self.hub.files()
+            .create(self.convert_to_file(file_wrapper))
+            .add_scope(Scope::Full)
+            .param("fields", fields)
+            .upload(fs::File::open(&file_wrapper.path).unwrap(), file_wrapper.mime_type.parse().unwrap())?;
+        let mut response_file_wrapper = Drive::convert_to_file_wrapper(&response.1, &file_wrapper.path);
+        response_file_wrapper.last_accessed = file_wrapper.last_accessed;
+        self.context.store_file(&response_file_wrapper);
+        debug!("Uploaded and stored {} correctly", file_wrapper.path.display());
+        Ok(())
+    }
+
+    fn convert_to_file_wrapper(file: &File, path: &PathBuf) -> FileWrapper {
+        FileWrapper {
+            id: file.id.clone().unwrap(),
+            name: file.name.clone().unwrap(),
+            mime_type: file.mime_type.clone().unwrap(),
+            path: path.clone(),
+            directory: file.mime_type.as_ref().unwrap() == DIRECTORY_MIME_TYPE,
+            web_view_link: file.web_view_link.clone(),
+            owned_by_me: file.owned_by_me.unwrap_or(true),
+            last_modified: DateTime::parse_from_rfc3339(file.modified_time.as_ref().unwrap()).unwrap(),
+            last_accessed: SystemTime::UNIX_EPOCH,
+            trashed: file.trashed.unwrap_or(false),
+        }
+    }
+
+    fn convert_to_file(&self, file_wrapper: &FileWrapper) -> File {
+        let mime_type =
+            if file_wrapper.directory {
+                Some(DIRECTORY_MIME_TYPE.to_string())
+            } else {
+                Some(file_wrapper.clone().mime_type)
+            };
+        let path_parent = file_wrapper.path.parent();
+        let parents =
+            if path_parent.is_some() {
+                if path_parent.unwrap() == self.config.root_dir {
+                    None
+                } else {
+                    Some(vec![path_parent.unwrap().file_name().unwrap().to_str().unwrap().to_string()])
+                }
+            } else {
+                None
+            };
+        File {
+            mime_type,
+            parents,
+            name: Some(file_wrapper.name.clone()),
+            ..Default::default()
         }
     }
 
@@ -304,7 +365,7 @@ impl<'a> Drive<'a> {
 
 const DIRECTORY_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 
-#[derive(Clone)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct FileWrapper {
     pub id: String,
     pub name: String,
@@ -315,6 +376,7 @@ pub struct FileWrapper {
     pub owned_by_me: bool,
     pub last_modified: DateTime<FixedOffset>,
     pub last_accessed: SystemTime,
+    pub trashed: bool,
 }
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
