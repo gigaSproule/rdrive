@@ -4,7 +4,7 @@ extern crate hyper_rustls;
 extern crate yup_oauth2 as oauth2;
 
 use std::{env, fs, thread};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use drive3::DriveHub;
@@ -16,6 +16,7 @@ use log4rs::append::console::ConsoleAppender;
 use log4rs::append::file::FileAppender;
 use log4rs::config::{Appender, Config, Logger, Root};
 use log4rs::encode::pattern::PatternEncoder;
+use log4rs::filter::threshold::ThresholdFilter;
 use log4rs::Handle;
 use oauth2::{ApplicationSecret, Authenticator, DefaultAuthenticatorDelegate, DiskTokenStorage};
 use rusqlite::Connection;
@@ -45,6 +46,10 @@ fn main() {
             if existing_file_wrappers.iter().any(|f| f.path.to_str().unwrap() == file_wrapper.path.to_str().unwrap()) {
                 debug!("Not handling {} as a local file as it's already been handled", file_wrapper.path.display())
             } else {
+                if file_wrapper.directory {
+                    debug!("Can't currently handle new directories");
+                    continue;
+                }
                 debug!("Upload {} to Google Drive for the first time", file_wrapper.path.display());
                 let result = drive.upload_file(file_wrapper);
                 if result.is_err() {
@@ -86,12 +91,15 @@ fn configure_logging() -> Result<Handle, SetLoggerError> {
 
     let file = FileAppender::builder()
         .encoder(Box::new(PatternEncoder::new("{d} - {m}{n}")))
-        .build("log/rdrive.log")
+        .build(get_base_log_path().join("rdrive.log"))
         .unwrap();
 
     let config = Config::builder()
-        .appender(Appender::builder().build("stdout", Box::new(stdout)))
-        .appender(Appender::builder().build("file", Box::new(file)))
+        .appender(Appender::builder()
+            .filter(Box::new(ThresholdFilter::new(LevelFilter::Warn)))
+            .build("stdout", Box::new(stdout)))
+        .appender(Appender::builder()
+            .build("file", Box::new(file)))
         .logger(Logger::builder()
             .appender("file")
             .build("rdrive", LevelFilter::Debug))
@@ -101,26 +109,15 @@ fn configure_logging() -> Result<Handle, SetLoggerError> {
     log4rs::init_config(config)
 }
 
-// fn download_all_files(drive: &Drive<'_>, file_wrappers: Vec<FileWrapper>) {
-//     let mut download_futures = vec![];
-//     for file in file_wrappers {
-//         debug!("Path: {}, Name: {}, Directory: {}", &file.path.display(), &file.name, &file.directory);
-//         if !file.directory {
-//             download_futures.push(drive.create_file(file.clone()));
-//         }
-//     }
-//     for future in download_futures {
-//         future.join().expect("Failed to join to future");
-//     }
-// }
-
 fn get_client() -> Client {
     Client::with_connector(HttpsConnector::new(TlsClient::new()))
 }
 
 fn get_authenticator() -> Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client> {
-    let secret: ApplicationSecret = yup_oauth2::read_application_secret(Path::new("secret.json")).expect("secret.json");
-    let token_storage = DiskTokenStorage::new(&String::from("temp-key")).unwrap();
+    let secret_json = include_str!("../secret.json").to_owned();
+    let secret: ApplicationSecret = yup_oauth2::parse_application_secret(&secret_json).expect("secret.json");
+    let token_file = &get_base_data_path().join("temp-key").to_str().unwrap().to_owned();
+    let token_storage = DiskTokenStorage::new(&token_file).unwrap();
     Authenticator::new(
         &secret,
         DefaultAuthenticatorDelegate,
@@ -131,18 +128,27 @@ fn get_authenticator() -> Authenticator<DefaultAuthenticatorDelegate, DiskTokenS
 }
 
 fn get_db_connection() -> Connection {
-    let db_file = Path::new(&get_base_data_path())
-        .join("rdrive")
-        .join("rdrive.db");
+    let db_file = &get_base_data_path().join("rdrive.db");
     fs::create_dir_all(&db_file.parent().unwrap()).unwrap();
     return Connection::open(db_file).unwrap();
 }
 
-fn get_base_data_path() -> String {
-    return match env::consts::OS {
-        "windows" => env::var("LOCALAPPDATA").unwrap(),
-        "linux" => env::var("XDG_DATA_HOME").unwrap_or(env::var("HOME").unwrap() + "/.local/share"),
-        "macos" => env::var("HOME").unwrap() + "/Library",
-        _ => String::new()
+fn get_base_data_path() -> PathBuf {
+    let data_path = match env::consts::OS {
+        "windows" => PathBuf::from(env::var("LOCALAPPDATA").unwrap()),
+        "linux" => PathBuf::from(env::var("XDG_DATA_HOME").unwrap_or(env::var("HOME").unwrap() + "/.local/share")),
+        "macos" => PathBuf::from(env::var("HOME").unwrap() + "/Library"),
+        _ => PathBuf::new()
     };
+    data_path.join("rdrive")
+}
+
+fn get_base_log_path() -> PathBuf {
+    let log_path = match env::consts::OS {
+        "windows" => PathBuf::from(env::var("LOCALAPPDATA").unwrap()),
+        "linux" => PathBuf::from(env::var("XDG_DATA_HOME").unwrap_or(env::var("HOME").unwrap() + "/.local/share")),
+        "macos" => PathBuf::from(env::var("HOME").unwrap()).join("Library").join("Logs"),
+        _ => PathBuf::new()
+    };
+    log_path.join("rdrive")
 }
