@@ -1,9 +1,8 @@
-use std::{borrow::Borrow, collections::HashMap, env, fs, io::{BufReader, Read}, io, path::Path, thread};
+use std::{borrow::Borrow, collections::HashMap, env, fs, io::{BufReader, Read}, io, path::Path};
 use std::fs::{create_dir_all, read_dir};
 use std::io::{BufWriter, Error, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
-use thread::JoinHandle;
 
 use chrono::{DateTime, FixedOffset, Local};
 use drive3::{File, Scope};
@@ -94,26 +93,26 @@ impl Drive {
     fn get_path(&self, file: &File, files_by_id: &HashMap<String, File>) -> PathBuf {
         let parents = file.parents.as_ref();
         if parents.is_none() {
-            let file_name: &String = file.name.as_ref().unwrap();
+            let file_name = Drive::clean_file_name(&file.name);
             return PathBuf::from(file_name);
         }
         let parent_id = parents.unwrap().first();
         if parent_id.is_none() {
-            let file_name: &String = file.name.borrow().as_ref().unwrap();
+            let file_name = Drive::clean_file_name(&file.name);
             return PathBuf::from(file_name);
         }
         let mut parent = files_by_id.get(parent_id.unwrap());
         if parent.is_none() {
-            let file_name: &String = file.name.borrow().as_ref().unwrap();
+            let file_name = Drive::clean_file_name(&file.name);
             return PathBuf::from(file_name);
         }
-        let parent_name = parent.unwrap().name.as_ref();
+        let parent_name = parent.unwrap().clone().name;
         if parent_name.is_none() {
-            let file_name: &String = file.name.borrow().as_ref().unwrap();
+            let file_name = Drive::clean_file_name(&file.name);
             return PathBuf::from(file_name);
         }
         let mut path = PathBuf::new();
-        path.push(parent_name.unwrap());
+        path.push(Drive::clean_file_name(&parent_name));
         while parent.is_some() {
             let parents = parent.unwrap().parents.as_ref();
             if parents.is_none() {
@@ -125,14 +124,22 @@ impl Drive {
                 } else {
                     parent = files_by_id.get(parent_id.unwrap());
                     if parent.is_some() {
-                        let parent_name = parent.unwrap().name.as_ref().unwrap();
-                        path = Path::new(parent_name).join(&path.as_path());
+                        let parent_name = Drive::clean_file_name(&parent.unwrap().name);
+                        path = Path::new(&parent_name).join(&path.as_path());
                     }
                 }
             }
         }
-        let file_name: &String = file.name.borrow().as_ref().unwrap();
-        return path.join(file_name);
+        return path.join(Drive::clean_file_name(&file.name));
+    }
+
+    fn clean_file_name(file_name: &Option<String>) -> String {
+        match env::consts::OS {
+            "windows" => file_name.as_ref().unwrap().replace("\\", "_"),
+            "linux" => file_name.as_ref().unwrap().replace("/", "_"),
+            "macos" => file_name.as_ref().unwrap().replace("/", "_"),
+            _ => file_name.clone().unwrap()
+        }
     }
 
     pub fn get_all_files(&self, owned_only: bool) -> Result<Vec<FileWrapper>, Error> {
@@ -226,31 +233,42 @@ impl Drive {
     }
 
     pub fn get_local_files(&self) -> Result<Vec<FileWrapper>, Error> {
-        read_dir(&self.config.root_dir)?
-            .map(|res| {
-                res.map(|e| {
-                    let metadata = e.metadata().unwrap();
-                    let last_modified = <DateTime<Local>>::from(metadata.modified().unwrap());
-                    let mime_type = if e.file_type().unwrap().is_dir() {
-                        DIRECTORY_MIME_TYPE.to_string()
-                    } else {
-                        mime_guess::from_path(e.path().as_path()).first().unwrap_or(mime::TEXT_PLAIN).essence_str().to_string()
-                    };
-                    FileWrapper {
-                        id: String::new(),
-                        name: e.file_name().into_string().unwrap(),
-                        mime_type,
-                        path: e.path(),
-                        directory: e.file_type().unwrap().is_dir(),
-                        web_view_link: None,
-                        owned_by_me: true,
-                        last_modified: <DateTime<FixedOffset>>::from(last_modified),
-                        last_accessed: metadata.modified().unwrap(),
-                        trashed: false,
-                    }
-                })
-            })
-            .collect::<Result<Vec<_>, io::Error>>()
+        self.read_local_dir(&self.config.root_dir)
+    }
+
+    fn read_local_dir(&self, dir: &PathBuf) -> Result<Vec<FileWrapper>, Error> {
+        debug!("Traversing {}", dir.display());
+        Ok(read_dir(&dir)?
+            .flat_map(|res| {
+                res.into_iter().
+                    flat_map(|e| {
+                        let metadata = e.metadata().unwrap();
+                        let last_modified = <DateTime<Local>>::from(metadata.modified().unwrap());
+                        let mime_type = if e.file_type().unwrap().is_dir() {
+                            DIRECTORY_MIME_TYPE.to_string()
+                        } else {
+                            mime_guess::from_path(e.path().as_path()).first().unwrap_or(mime::TEXT_PLAIN).essence_str().to_string()
+                        };
+                        let mut files = if e.file_type().unwrap().is_dir() {
+                            self.read_local_dir(&e.path()).unwrap_or(vec![])
+                        } else {
+                            vec![]
+                        };
+                        files.extend(vec![FileWrapper {
+                            id: String::new(),
+                            name: e.file_name().into_string().unwrap(),
+                            mime_type,
+                            path: e.path(),
+                            directory: e.file_type().unwrap().is_dir(),
+                            web_view_link: None,
+                            owned_by_me: true,
+                            last_modified: <DateTime<FixedOffset>>::from(last_modified),
+                            last_accessed: metadata.modified().unwrap(),
+                            trashed: false,
+                        }]);
+                        files
+                    })
+            }).collect::<Vec<FileWrapper>>())
     }
 
     pub fn upload_file(&self, file_wrapper: &FileWrapper) -> Result<(), drive3::Error> {

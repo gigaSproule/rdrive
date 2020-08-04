@@ -4,7 +4,7 @@ extern crate hyper_rustls;
 extern crate yup_oauth2 as oauth2;
 
 use std::{env, fs, thread};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use drive3::DriveHub;
