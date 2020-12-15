@@ -383,7 +383,7 @@ impl Drive {
 
 const DIRECTORY_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub struct FileWrapper {
     pub id: String,
     pub name: String,

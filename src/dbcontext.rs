@@ -126,3 +126,83 @@ impl DbContext {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs::remove_file;
+
+    use chrono::offset::Utc;
+    use Connection;
+
+    use serial_test::serial;
+
+    use super::*;
+
+    #[test]
+    #[serial]
+    fn init_should_create_table() {
+        let connection = get_connection();
+        let dbcontext = DbContext::new(connection);
+        let result = dbcontext.init();
+        assert_eq!(result, Ok(()));
+        let new_connection = get_connection();
+        let table = new_connection.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='file'", NO_PARAMS, |row| -> rusqlite::Result<String> {
+            row.get(0)
+        });
+        assert_eq!(table, Ok("CREATE TABLE file (\n                id TEXT PRIMARY KEY,\n                name TEXT NOT NULL,\n                mime_type TEXT NOT NULL,\n                path TEXT NOT NULL,\n                directory INTEGER NOT NULL,\n                web_view_link TEXT,\n                owned_by_me INTEGER NOT NULL,\n                last_modified TEXT NOT NULL,\n                last_accessed TEXT NOT NULL,\n                trashed INTEGER NOT NULL\n            )".to_string()));
+        delete_db();
+    }
+
+    #[test]
+    #[serial]
+    fn should_store_new_file() {
+        let connection = get_connection();
+        let dbcontext = DbContext::new(connection);
+        dbcontext.init();
+        let expected_file_wrapper = FileWrapper {
+            id: "id".to_string(),
+            name: "name".to_string(),
+            mime_type: "mime_type".to_string(),
+            path: PathBuf::from("dbcontext.rs"),
+            directory: false,
+            web_view_link: Some("web_view_link".to_string()),
+            owned_by_me: true,
+            last_modified: DateTime::from(Utc::now()),
+            last_accessed: SystemTime::from(Utc::now()),
+            trashed: false,
+        };
+        let result = dbcontext.store_file(&expected_file_wrapper);
+        assert_eq!(result, Ok(1));
+
+        let new_connection = get_connection();
+        let actual_file_wrapper = new_connection.query_row("SELECT * FROM file", NO_PARAMS, |row: &Row| -> rusqlite::Result<FileWrapper> {
+            let path: String = row.get(3).unwrap();
+            let last_changed: String = row.get(7).unwrap();
+            let last_accessed: String = row.get(8).unwrap();
+            Ok(FileWrapper {
+                id: row.get(0).unwrap(),
+                name: row.get(1).unwrap(),
+                mime_type: row.get(2).unwrap(),
+                path: path.parse().unwrap(),
+                directory: row.get(4).unwrap(),
+                web_view_link: row.get(5).unwrap(),
+                owned_by_me: row.get(6).unwrap(),
+                last_modified: DateTime::parse_from_rfc3339(&last_changed).unwrap(),
+                last_accessed: SystemTime::from(DateTime::parse_from_rfc3339(&last_accessed).unwrap()),
+                trashed: row.get(9).unwrap(),
+            })
+        });
+        assert_eq!(actual_file_wrapper.unwrap(), expected_file_wrapper);
+        delete_db();
+    }
+
+    const DB_PATH: &'static str = "test.db";
+
+    fn get_connection() -> Connection {
+        Connection::open("test.db").unwrap()
+    }
+
+    fn delete_db() {
+        remove_file(DB_PATH);
+    }
+}
