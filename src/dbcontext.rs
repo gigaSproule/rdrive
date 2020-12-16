@@ -8,7 +8,7 @@ use rusqlite::{Connection, Error, NO_PARAMS, Row, Statement};
 use crate::drive::FileWrapper;
 
 pub struct DbContext {
-    pub conn: Connection
+    conn: Connection
 }
 
 impl DbContext {
@@ -34,12 +34,12 @@ impl DbContext {
         Ok(())
     }
 
-    pub fn store_file(&self, file_wrapper: &FileWrapper) -> Result<i64, Error> {
+    pub fn store_file(&self, file_wrapper: &FileWrapper) -> Result<(), Error> {
         let last_accessed: SystemTime = file_wrapper.last_accessed;
         let last_accessed_converted: DateTime<Local> = DateTime::from(last_accessed);
         let stored_file = self.get_file(&file_wrapper.id);
         if stored_file.is_some() && stored_file.as_ref().unwrap().last_modified == file_wrapper.last_modified {
-            return Ok(-1);
+            return Ok(());
         }
         let mut statement: Statement = if stored_file.is_some() {
             self.conn.prepare("UPDATE file SET name = :name, mime_type = :mime_type, path = :path, directory = :directory, web_view_link = :web_view_link, owned_by_me = :owned_by_me, last_modified = :last_modified, last_accessed = :last_accessed, trashed = :trashed WHERE id = :id")?
@@ -60,7 +60,7 @@ impl DbContext {
                 (":trashed", &file_wrapper.trashed)
             ]
         )?;
-        return Ok(self.conn.last_insert_rowid());
+        return Ok(());
     }
 
     pub fn get_file(&self, id: &String) -> Option<FileWrapper> {
@@ -120,20 +120,34 @@ impl DbContext {
                 Ok(())
             }
             Err(error) => {
-                error!("Error occured when updating the last_accessed - {}", error);
+                error!("Error occurred when updating the last_accessed - {}", error);
                 Err(error)
             }
         }
+    }
+
+    pub fn transaction(&self, func: impl Fn() -> Result<(), Error>) -> Result<(), Error> {
+        self.conn.execute_batch("BEGIN TRANSACTION;")?;
+        let func_result = func();
+        if func_result.is_err() {
+            self.conn.execute_batch("ROLLBACK TRANSACTION;")?;
+        } else {
+            self.conn.execute_batch("COMMIT TRANSACTION;")?;
+        }
+        func_result
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Borrow;
     use std::fs::remove_file;
 
     use chrono::offset::Utc;
+    use chrono::Timelike;
     use Connection;
-
+    use rusqlite::ffi::ErrorCode;
+    use rusqlite::Result;
     use serial_test::serial;
 
     use super::*;
@@ -141,24 +155,28 @@ mod tests {
     #[test]
     #[serial]
     fn init_should_create_table() {
+        delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
         let connection = get_connection();
-        let dbcontext = DbContext::new(connection);
         let result = dbcontext.init();
-        assert_eq!(result, Ok(()));
-        let new_connection = get_connection();
-        let table = new_connection.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='file'", NO_PARAMS, |row| -> rusqlite::Result<String> {
+        assert!(result.is_ok());
+
+        let table = connection.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='file'", NO_PARAMS, |row| -> Result<String> {
             row.get(0)
         });
         assert_eq!(table, Ok("CREATE TABLE file (\n                id TEXT PRIMARY KEY,\n                name TEXT NOT NULL,\n                mime_type TEXT NOT NULL,\n                path TEXT NOT NULL,\n                directory INTEGER NOT NULL,\n                web_view_link TEXT,\n                owned_by_me INTEGER NOT NULL,\n                last_modified TEXT NOT NULL,\n                last_accessed TEXT NOT NULL,\n                trashed INTEGER NOT NULL\n            )".to_string()));
-        delete_db();
     }
 
     #[test]
     #[serial]
-    fn should_store_new_file() {
+    fn store_file_should_store_new_file() {
+        delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
         let connection = get_connection();
-        let dbcontext = DbContext::new(connection);
-        dbcontext.init();
+        let init_result = dbcontext.init();
+        assert!(init_result.is_ok());
         let expected_file_wrapper = FileWrapper {
             id: "id".to_string(),
             name: "name".to_string(),
@@ -172,10 +190,9 @@ mod tests {
             trashed: false,
         };
         let result = dbcontext.store_file(&expected_file_wrapper);
-        assert_eq!(result, Ok(1));
+        assert!(result.is_ok());
 
-        let new_connection = get_connection();
-        let actual_file_wrapper = new_connection.query_row("SELECT * FROM file", NO_PARAMS, |row: &Row| -> rusqlite::Result<FileWrapper> {
+        let actual_file_wrapper = connection.query_row("SELECT * FROM file", NO_PARAMS, |row: &Row| -> Result<FileWrapper> {
             let path: String = row.get(3).unwrap();
             let last_changed: String = row.get(7).unwrap();
             let last_accessed: String = row.get(8).unwrap();
@@ -193,7 +210,337 @@ mod tests {
             })
         });
         assert_eq!(actual_file_wrapper.unwrap(), expected_file_wrapper);
+    }
+
+    #[test]
+    #[serial]
+    fn store_file_should_update_stored_file_details() {
         delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
+        let connection = get_connection();
+        let init_result = dbcontext.init();
+        assert!(init_result.is_ok());
+        let original_file_wrapper = FileWrapper {
+            id: "id".to_string(),
+            name: "name".to_string(),
+            mime_type: "mime_type".to_string(),
+            path: PathBuf::from("dbcontext.rs"),
+            directory: false,
+            web_view_link: Some("web_view_link".to_string()),
+            owned_by_me: true,
+            last_modified: DateTime::from(Utc::now()),
+            last_accessed: SystemTime::from(Utc::now()),
+            trashed: false,
+        };
+        let updated_file_wrapper = FileWrapper {
+            id: original_file_wrapper.id.clone(),
+            name: "updated name".to_string(),
+            mime_type: "updated mime_type".to_string(),
+            path: PathBuf::from("src"),
+            directory: true,
+            web_view_link: Some("updated web_view_link".to_string()),
+            owned_by_me: false,
+            last_modified: DateTime::from(Utc::now().with_minute(Utc::now().minute() + 1).unwrap()),
+            last_accessed: SystemTime::from(Utc::now().with_minute(Utc::now().minute() + 1).unwrap()),
+            trashed: true,
+        };
+        insert_file_wrapper(&connection, &original_file_wrapper);
+        let result = dbcontext.store_file(&updated_file_wrapper);
+        assert!(result.is_ok());
+
+        let actual_file_wrapper = connection.query_row("SELECT * FROM file", NO_PARAMS, |row: &Row| -> Result<FileWrapper> {
+            let path: String = row.get(3).unwrap();
+            let last_changed: String = row.get(7).unwrap();
+            let last_accessed: String = row.get(8).unwrap();
+            Ok(FileWrapper {
+                id: row.get(0).unwrap(),
+                name: row.get(1).unwrap(),
+                mime_type: row.get(2).unwrap(),
+                path: path.parse().unwrap(),
+                directory: row.get(4).unwrap(),
+                web_view_link: row.get(5).unwrap(),
+                owned_by_me: row.get(6).unwrap(),
+                last_modified: DateTime::parse_from_rfc3339(&last_changed).unwrap(),
+                last_accessed: SystemTime::from(DateTime::parse_from_rfc3339(&last_accessed).unwrap()),
+                trashed: row.get(9).unwrap(),
+            })
+        });
+        assert_eq!(actual_file_wrapper.unwrap(), updated_file_wrapper);
+    }
+
+    #[test]
+    #[serial]
+    fn store_file_should_not_update_stored_file_details_if_last_modified_is_the_same() {
+        delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
+        let connection = get_connection();
+        let init_result = dbcontext.init();
+        assert!(init_result.is_ok());
+        let original_file_wrapper = FileWrapper {
+            id: "id".to_string(),
+            name: "name".to_string(),
+            mime_type: "mime_type".to_string(),
+            path: PathBuf::from("dbcontext.rs"),
+            directory: false,
+            web_view_link: Some("web_view_link".to_string()),
+            owned_by_me: true,
+            last_modified: DateTime::from(Utc::now()),
+            last_accessed: SystemTime::from(Utc::now()),
+            trashed: false,
+        };
+        let updated_file_wrapper = FileWrapper {
+            id: original_file_wrapper.id.clone(),
+            name: "updated name".to_string(),
+            mime_type: "updated mime_type".to_string(),
+            path: PathBuf::from("src"),
+            directory: true,
+            web_view_link: Some("updated web_view_link".to_string()),
+            owned_by_me: false,
+            last_modified: original_file_wrapper.last_modified.clone(),
+            last_accessed: SystemTime::from(Utc::now().with_minute(Utc::now().minute() + 1).unwrap()),
+            trashed: true,
+        };
+        insert_file_wrapper(&connection, &original_file_wrapper);
+        let result = dbcontext.store_file(&updated_file_wrapper);
+        assert!(result.is_ok());
+
+        let actual_file_wrapper = connection.query_row("SELECT * FROM file", NO_PARAMS, |row: &Row| -> Result<FileWrapper> {
+            let path: String = row.get(3).unwrap();
+            let last_changed: String = row.get(7).unwrap();
+            let last_accessed: String = row.get(8).unwrap();
+            Ok(FileWrapper {
+                id: row.get(0).unwrap(),
+                name: row.get(1).unwrap(),
+                mime_type: row.get(2).unwrap(),
+                path: path.parse().unwrap(),
+                directory: row.get(4).unwrap(),
+                web_view_link: row.get(5).unwrap(),
+                owned_by_me: row.get(6).unwrap(),
+                last_modified: DateTime::parse_from_rfc3339(&last_changed).unwrap(),
+                last_accessed: SystemTime::from(DateTime::parse_from_rfc3339(&last_accessed).unwrap()),
+                trashed: row.get(9).unwrap(),
+            })
+        });
+        assert_eq!(actual_file_wrapper.unwrap(), original_file_wrapper);
+    }
+
+    #[test]
+    #[serial]
+    fn get_file_should_return_none_if_no_stored_file() {
+        delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
+        let init_result = dbcontext.init();
+        assert!(init_result.is_ok());
+        let result = dbcontext.get_file(&"id".to_string());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    #[serial]
+    fn get_file_should_get_stored_file() {
+        delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
+        let connection = get_connection();
+        let init_result = dbcontext.init();
+        assert!(init_result.is_ok());
+        let stored_file_wrapper = FileWrapper {
+            id: "id".to_string(),
+            name: "name".to_string(),
+            mime_type: "mime_type".to_string(),
+            path: PathBuf::from("dbcontext.rs"),
+            directory: false,
+            web_view_link: Some("web_view_link".to_string()),
+            owned_by_me: true,
+            last_modified: DateTime::from(Utc::now()),
+            last_accessed: SystemTime::from(Utc::now()),
+            trashed: false,
+        };
+        insert_file_wrapper(&connection, &stored_file_wrapper);
+        let result = dbcontext.get_file(&stored_file_wrapper.id);
+        assert_eq!(result.unwrap(), stored_file_wrapper);
+    }
+
+    #[test]
+    #[serial]
+    fn get_all_files_should_return_empty_vec_if_no_stored_file() {
+        delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
+        let init_result = dbcontext.init();
+        assert!(init_result.is_ok());
+        let result = dbcontext.get_all_files();
+        assert_eq!(result, Ok(vec![]));
+    }
+
+    #[test]
+    #[serial]
+    fn get_all_files_should_get_stored_files() {
+        delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
+        let connection = get_connection();
+        let init_result = dbcontext.init();
+        assert!(init_result.is_ok());
+        let stored_file_wrapper_1 = FileWrapper {
+            id: "id1".to_string(),
+            name: "name1".to_string(),
+            mime_type: "mime_type1".to_string(),
+            path: PathBuf::from("dbcontext1.rs"),
+            directory: false,
+            web_view_link: Some("web_view_link1".to_string()),
+            owned_by_me: true,
+            last_modified: DateTime::from(Utc::now()),
+            last_accessed: SystemTime::from(Utc::now()),
+            trashed: false,
+        };
+        let stored_file_wrapper_2 = FileWrapper {
+            id: "id2".to_string(),
+            name: "name2".to_string(),
+            mime_type: "mime_type2".to_string(),
+            path: PathBuf::from("dbcontext2.rs"),
+            directory: true,
+            web_view_link: Some("web_view_link2".to_string()),
+            owned_by_me: false,
+            last_modified: DateTime::from(Utc::now().with_minute(Utc::now().minute() + 1).unwrap()),
+            last_accessed: SystemTime::from(Utc::now().with_minute(Utc::now().minute() + 1).unwrap()),
+            trashed: true,
+        };
+        insert_file_wrapper(&connection, &stored_file_wrapper_1);
+        insert_file_wrapper(&connection, &stored_file_wrapper_2);
+        let result = dbcontext.get_file(&stored_file_wrapper_2.id);
+        assert_eq!(result.unwrap(), stored_file_wrapper_2);
+    }
+
+    #[test]
+    #[serial]
+    fn update_last_accessed_should_update_last_accessed() {
+        delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
+        let connection = get_connection();
+        let init_result = dbcontext.init();
+        assert!(init_result.is_ok());
+        let file_wrapper = FileWrapper {
+            id: "id".to_string(),
+            name: "name".to_string(),
+            mime_type: "mime_type".to_string(),
+            path: PathBuf::from("dbcontext.rs"),
+            directory: false,
+            web_view_link: Some("web_view_link".to_string()),
+            owned_by_me: true,
+            last_modified: DateTime::from(Utc::now()),
+            last_accessed: SystemTime::from(Utc::now()),
+            trashed: false,
+        };
+        insert_file_wrapper(&connection, &file_wrapper);
+        let time = SystemTime::now();
+        let result = dbcontext.update_last_accessed(&file_wrapper.id, &time);
+        assert!(result.is_ok());
+        let stored_last_accessed = connection.query_row("SELECT last_accessed FROM file", NO_PARAMS, |row: &Row| -> Result<SystemTime> {
+            let last_accessed: String = row.get(0).unwrap();
+            Ok(SystemTime::from(DateTime::parse_from_rfc3339(&last_accessed).unwrap()))
+        });
+        assert_eq!(stored_last_accessed.unwrap(), time);
+    }
+
+    #[test]
+    #[serial]
+    fn transaction_should_rollback_transaction_on_error() {
+        delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
+        let connection = get_connection();
+        let init_result = dbcontext.init();
+        assert!(init_result.is_ok());
+        let result = dbcontext.transaction(|| -> Result<(), Error>{
+            let file_wrapper = FileWrapper {
+                id: "id".to_string(),
+                name: "name".to_string(),
+                mime_type: "mime_type".to_string(),
+                path: PathBuf::from("dbcontext.rs"),
+                directory: false,
+                web_view_link: Some("web_view_link".to_string()),
+                owned_by_me: true,
+                last_modified: DateTime::from(Utc::now()),
+                last_accessed: SystemTime::from(Utc::now()),
+                trashed: false,
+            };
+            dbcontext.store_file(&file_wrapper)?;
+            Err(Error::SqliteFailure(rusqlite::ffi::Error { code: ErrorCode::OutOfMemory, extended_code: 1 }, Some("Something went wrong".to_string())))
+        });
+        let expected_error = Error::SqliteFailure(rusqlite::ffi::Error { code: ErrorCode::OutOfMemory, extended_code: 1 }, Some("Something went wrong".to_string()));
+        assert_eq!(result.unwrap_err(), expected_error);
+
+        let count: Result<i32> = connection.query_row("SELECT COUNT(*) FROM file", NO_PARAMS, |row| row.get(0));
+        assert_eq!(count.unwrap(), 0);
+    }
+
+    #[test]
+    #[serial]
+    fn transaction_should_commit_transaction_on_success() {
+        delete_db();
+        let dbcontext_connection = get_connection();
+        let dbcontext = DbContext::new(dbcontext_connection);
+        let connection = get_connection();
+        let init_result = dbcontext.init();
+        assert!(init_result.is_ok());
+        let expected_file_wrapper = FileWrapper {
+            id: "id".to_string(),
+            name: "name".to_string(),
+            mime_type: "mime_type".to_string(),
+            path: PathBuf::from("dbcontext.rs"),
+            directory: false,
+            web_view_link: Some("web_view_link".to_string()),
+            owned_by_me: true,
+            last_modified: DateTime::from(Utc::now()),
+            last_accessed: SystemTime::from(Utc::now()),
+            trashed: false,
+        };
+        let result = dbcontext.transaction(|| -> Result<(), Error>{
+            dbcontext.store_file(&expected_file_wrapper)?;
+            Ok(())
+        });
+        assert!(result.is_ok());
+
+        let actual_file_wrapper = connection.query_row("SELECT * FROM file", NO_PARAMS, |row: &Row| -> Result<FileWrapper> {
+            let path: String = row.get(3).unwrap();
+            let last_changed: String = row.get(7).unwrap();
+            let last_accessed: String = row.get(8).unwrap();
+            Ok(FileWrapper {
+                id: row.get(0).unwrap(),
+                name: row.get(1).unwrap(),
+                mime_type: row.get(2).unwrap(),
+                path: path.parse().unwrap(),
+                directory: row.get(4).unwrap(),
+                web_view_link: row.get(5).unwrap(),
+                owned_by_me: row.get(6).unwrap(),
+                last_modified: DateTime::parse_from_rfc3339(&last_changed).unwrap(),
+                last_accessed: SystemTime::from(DateTime::parse_from_rfc3339(&last_accessed).unwrap()),
+                trashed: row.get(9).unwrap(),
+            })
+        });
+        assert_eq!(actual_file_wrapper.unwrap(), expected_file_wrapper);
+    }
+
+    fn insert_file_wrapper(connection: &Connection, file_wrapper: &FileWrapper) {
+        let last_accessed_converted: DateTime<Local> = DateTime::from(file_wrapper.last_accessed);
+        let result = connection.execute("INSERT INTO file (id, name, mime_type, path, directory, web_view_link, owned_by_me, last_modified, last_accessed, trashed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", &[
+            &file_wrapper.id,
+            &file_wrapper.name,
+            &file_wrapper.mime_type,
+            &file_wrapper.path.to_str().unwrap().to_string(),
+            &(file_wrapper.directory as i32).to_string(),
+            &file_wrapper.web_view_link.borrow().as_ref().unwrap(),
+            &(file_wrapper.owned_by_me as i32).to_string(),
+            &file_wrapper.last_modified.to_rfc3339(),
+            &last_accessed_converted.to_rfc3339(),
+            &(file_wrapper.trashed as i32).to_string()
+        ]);
+        assert!(result.is_ok());
     }
 
     const DB_PATH: &'static str = "test.db";
@@ -203,6 +550,9 @@ mod tests {
     }
 
     fn delete_db() {
-        remove_file(DB_PATH);
+        let removed = remove_file(DB_PATH);
+        if removed.is_err() {
+            println!("Failed to remove {}. If any tests failed, this could be why.", DB_PATH);
+        }
     }
 }

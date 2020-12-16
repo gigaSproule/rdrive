@@ -19,3 +19,4 @@ Cargo.lock
 secret.json
 temp-key
 log/
+test.db

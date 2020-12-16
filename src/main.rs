@@ -4,6 +4,7 @@ extern crate hyper_rustls;
 extern crate yup_oauth2 as oauth2;
 
 use std::{env, fs, thread};
+use std::error::Error;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -26,7 +27,7 @@ use crate::drive::{Drive, FileWrapper};
 mod drive;
 mod dbcontext;
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     let _handle = configure_logging().unwrap();
     let connection = get_db_connection();
     let hub = DriveHub::new(get_client(), get_authenticator());
@@ -35,7 +36,7 @@ fn main() {
     drive.init();
 
     loop {
-        drive.store_fetched_files();
+        drive.store_fetched_files()?;
         let existing_file_wrappers = drive.get_all_files(true).unwrap();
         debug!("Retrieved {} files", existing_file_wrappers.len());
         for file_wrapper in &existing_file_wrappers {
@@ -67,19 +68,31 @@ fn handle_existing_file(drive: &Drive, file_wrapper: &FileWrapper) {
     }
     if !file_wrapper.path.exists() {
         debug!("Creating file {} for the first time", file_wrapper.path.display());
-        drive.create_file(file_wrapper);
+        let created = drive.create_file(file_wrapper);
+        if created.is_err() {
+            error!("Unable to create file {}.", file_wrapper.path.display())
+        }
     } else {
         let local_modified_time = file_wrapper.path.metadata().unwrap().modified().unwrap().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
         let remote_modified_time = file_wrapper.last_accessed.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
         if remote_modified_time == 0 {
             debug!("Remote modified time wasn't updated properly for file {} when it was created", file_wrapper.path.display());
-            drive.create_file(file_wrapper);
+            let created = drive.create_file(file_wrapper);
+            if created.is_err() {
+                error!("Unable to create file {}.", file_wrapper.path.display())
+            }
         } else if local_modified_time > remote_modified_time {
             debug!("File {} has changed locally since last sync", file_wrapper.path.display());
-            drive.upload_file(file_wrapper);
+            let uploaded = drive.upload_file(file_wrapper);
+            if uploaded.is_err() {
+                error!("Unable to create file {}.", file_wrapper.path.display())
+            }
         } else if local_modified_time < remote_modified_time {
             debug!("File {} has changed on remote since last sync", file_wrapper.path.display());
-            drive.create_file(file_wrapper);
+            let created = drive.create_file(file_wrapper);
+            if created.is_err() {
+                error!("Unable to create file {}.", file_wrapper.path.display())
+            }
         } else {
             debug!("Nothing to do for file {}", file_wrapper.path.display());
         }

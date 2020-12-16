@@ -69,17 +69,21 @@ impl Drive {
         for file in borrowed_files {
             files_by_id.insert(file.id.clone().unwrap(), file.clone());
         }
-        self.context.conn.execute_batch("BEGIN TRANSACTION;")?;
-        for file in borrowed_files {
-            let mut path = self.config.root_dir.clone();
-            path.push(self.get_path(&file, &files_by_id));
-            if self.should_be_ignored(&path) {
-                continue;
+        let stored_files_result = self.context.transaction(|| -> Result<(), rusqlite::Error> {
+            for file in borrowed_files {
+                let mut path = self.config.root_dir.clone();
+                path.push(self.get_path(&file, &files_by_id));
+                if self.should_be_ignored(&path) {
+                    continue;
+                }
+                let file_wrapper = Drive::convert_to_file_wrapper(file, &mut path);
+                self.context.store_file(&file_wrapper)?;
             }
-            let file_wrapper = Drive::convert_to_file_wrapper(file, &mut path);
-            self.context.store_file(&file_wrapper)?;
+            Ok(())
+        });
+        if stored_files_result.is_err() {
+            error!("Failed to store files {}", fetched_files.into_iter().map(|x| x.name.unwrap_or("".to_string())).collect::<Vec<String>>().join(", "));
         }
-        self.context.conn.execute_batch("COMMIT TRANSACTION;")?;
         Ok(())
     }
 
@@ -271,7 +275,7 @@ impl Drive {
             }).collect::<Vec<FileWrapper>>())
     }
 
-    pub fn upload_file(&self, file_wrapper: &FileWrapper) -> Result<(), drive3::Error> {
+    pub fn upload_file(&self, file_wrapper: &FileWrapper) -> Result<(), Box<dyn std::error::Error>> {
         let fields = "id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink, webViewLink, modifiedTime, trashed";
         let response = self.hub.files()
             .create(self.convert_to_file(file_wrapper))
@@ -280,7 +284,7 @@ impl Drive {
             .upload(fs::File::open(&file_wrapper.path).unwrap(), file_wrapper.mime_type.parse().unwrap())?;
         let mut response_file_wrapper = Drive::convert_to_file_wrapper(&response.1, &file_wrapper.path);
         response_file_wrapper.last_accessed = file_wrapper.last_accessed;
-        self.context.store_file(&response_file_wrapper);
+        self.context.store_file(&response_file_wrapper)?;
         debug!("Uploaded and stored {} correctly", file_wrapper.path.display());
         Ok(())
     }
