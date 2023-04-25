@@ -16,7 +16,7 @@ hyper-rustls = "^0.6"
 log4rs = { version = "0.12.0", features = ["file_appender"] }
 log = "0.4"
 mime = "0.3.16"
-mime_guess = "2.0.3"
+mime_guess = "2.0.4"
 regex = "1"
 rusqlite = "0.23.1"
 serde = { version = "^1.0", features = ["derive"] }
