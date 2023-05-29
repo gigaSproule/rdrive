@@ -456,7 +456,7 @@ checksum = "1788965e61b367cd03a62950836d5cd41560c3577d90e40e0819373194d1661c"
 dependencies = [
  "http",
  "hyper",
- "log 0.4.17",
+ "log 0.4.18",
  "rustls 0.20.8",
  "rustls-native-certs",
  "tokio",
@@ -471,7 +471,7 @@ checksum = "0646026eb1b3eea4cd9ba47912ea5ce9cc07713d105b1a14698f4e6433d348b7"
 dependencies = [
  "http",
  "hyper",
- "log 0.4.17",
+ "log 0.4.18",
  "rustls 0.21.1",
  "rustls-native-certs",
  "tokio",
@@ -599,16 +599,15 @@ version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e19e8d5c34a3e0e2223db8e060f9e8264aeeb5c5fc64a4ee9965c062211c024b"
 dependencies = [
- "log 0.4.17",
+ "log 0.4.18",
 ]
 
 [[package]]
 name = "log"
-version = "0.4.17"
+version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abb12e687cfb44aa40f41fc3978ef76448f9b6038cad6aef4259d3c095a2382e"
+checksum = "518ef76f2f87365916b142844c16d8fefd85039bc5699050210a7778ee1cd1de"
 dependencies = [
- "cfg-if",
  "serde",
 ]
 
@@ -631,7 +630,7 @@ dependencies = [
  "fnv",
  "humantime",
  "libc",
- "log 0.4.17",
+ "log 0.4.18",
  "log-mdc",
  "parking_lot",
  "serde",
@@ -688,7 +687,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b9d9a46eff5b4ff64b45a9e316a6d1e0bc719ef429cbec4dc630684212bfdf9"
 dependencies = [
  "libc",
- "log 0.4.17",
+ "log 0.4.18",
  "wasi 0.11.0+wasi-snapshot-preview1",
  "windows-sys",
 ]
@@ -857,7 +856,7 @@ dependencies = [
  "google-drive3",
  "hyper",
  "hyper-rustls 0.24.0",
- "log 0.4.17",
+ "log 0.4.18",
  "log4rs",
  "mime 0.3.17",
  "mime_guess",
@@ -931,7 +930,7 @@ version = "0.20.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fff78fc74d175294f4e83b28343315ffcfb114b156f0185e9741cb5570f50e2f"
 dependencies = [
- "log 0.4.17",
+ "log 0.4.18",
  "ring",
  "sct",
  "webpki",
@@ -943,7 +942,7 @@ version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c911ba11bc8433e811ce56fde130ccf32f5127cab0e0194e9c68c5a5b671791e"
 dependencies = [
- "log 0.4.17",
+ "log 0.4.18",
  "ring",
  "rustls-webpki",
  "sct",
@@ -1117,7 +1116,7 @@ checksum = "7eec42e7232e5ca56aa59d63af3c7f991fe71ee6a3ddd2d3480834cf3902b007"
 dependencies = [
  "futures",
  "lazy_static",
- "log 0.4.17",
+ "log 0.4.18",
  "parking_lot",
  "serial_test_derive",
 ]
@@ -1480,7 +1479,7 @@ version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ce8a968cb1cd110d136ff8b819a556d6fb6d919363c61534f6860c7eb172ba0"
 dependencies = [
- "log 0.4.17",
+ "log 0.4.18",
  "try-lock",
 ]
 
@@ -1514,7 +1513,7 @@ checksum = "5491a68ab4500fa6b4d726bd67408630c3dbe9c4fe7bda16d5c82a1fd8c7340a"
 dependencies = [
  "bumpalo",
  "lazy_static",
- "log 0.4.17",
+ "log 0.4.18",
  "proc-macro2",
  "quote",
  "syn 1.0.67",
@@ -1747,7 +1746,7 @@ dependencies = [
  "hyper",
  "hyper-rustls 0.23.2",
  "itertools",
- "log 0.4.17",
+ "log 0.4.18",
  "percent-encoding 2.2.0",
  "rustls 0.20.8",
  "rustls-pemfile 0.3.0",
@@ -1774,7 +1773,7 @@ dependencies = [
  "hyper",
  "hyper-rustls 0.24.0",
  "itertools",
- "log 0.4.17",
+ "log 0.4.18",
  "percent-encoding 2.2.0",
  "rustls 0.21.1",
  "rustls-pemfile 1.0.2",
