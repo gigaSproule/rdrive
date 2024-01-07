@@ -1,30 +1,30 @@
-use std::{borrow::Borrow, collections::HashMap, env, fs, io::{BufReader, Read}, io, path::Path};
+use std::{borrow::Borrow, collections::HashMap, env, fs, path::Path};
 use std::fs::{create_dir_all, read_dir};
-use std::io::{BufWriter, Error, Write};
+use std::io::{BufWriter, Write, BufReader};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use async_recursion::async_recursion;
 use chrono::{DateTime, FixedOffset, Local};
-use drive3::{File, Scope};
+use drive3::api::{File, Scope};
 use drive3::DriveHub;
 use glob::Pattern;
-use hyper::Client;
-use hyper::client::Response;
+use hyper::{Response, body::Body, client::HttpConnector};
+use hyper_rustls::HttpsConnector;
 use log::{debug, error};
-use oauth2::{Authenticator, DefaultAuthenticatorDelegate, DiskTokenStorage};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::dbcontext::DbContext;
 
 pub struct Drive {
-    hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>,
+    hub: DriveHub<HttpsConnector<HttpConnector>>,
     context: DbContext,
     config: Config,
 }
 
 impl Drive {
-    pub fn new(hub: DriveHub<Client, Authenticator<DefaultAuthenticatorDelegate, DiskTokenStorage, Client>>, connection: Connection) -> Drive {
+    pub fn new(hub: DriveHub<HttpsConnector<HttpConnector>>, connection: Connection) -> Drive {
         Drive {
             hub,
             context: DbContext::new(connection),
@@ -32,23 +32,24 @@ impl Drive {
         }
     }
 
-    pub fn init(&self) {
+    pub async fn init(&self) {
         self.context.init().unwrap();
-        self.store_fetched_files().unwrap();
+        self.store_fetched_files().await.unwrap();
     }
 
-    fn fetch_files(&self, page_token: Option<String>) -> Vec<File> {
+    #[async_recursion(?Send)]
+    async fn fetch_files(&self, page_token: Option<String>) -> Vec<File> {
         let fields = "nextPageToken, files(id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink, webViewLink, modifiedTime, trashed)";
         let mut file_list_call = self.hub.files().list().add_scope(Scope::Full).param("fields", fields);
         if page_token.is_some() {
             file_list_call = file_list_call.page_token(page_token.unwrap().as_str())
         }
-        let hub_result = file_list_call.doit();
+        let hub_result = file_list_call.doit().await;
         let fetched_files = match hub_result {
             Ok(x) => {
                 let mut files = x.1.files.unwrap();
                 if x.1.next_page_token.is_some() {
-                    for file in self.fetch_files(x.1.next_page_token.to_owned()) {
+                    for file in self.fetch_files(x.1.next_page_token.to_owned()).await {
                         files.push(file);
                     }
                 }
@@ -62,8 +63,8 @@ impl Drive {
         return fetched_files;
     }
 
-    pub fn store_fetched_files(&self) -> Result<(), rusqlite::Error> {
-        let fetched_files = self.fetch_files(None);
+    pub async fn store_fetched_files(&self) -> Result<(), rusqlite::Error> {
+        let fetched_files = self.fetch_files(None).await;
         let mut files_by_id = HashMap::new();
         let borrowed_files: &Vec<File> = fetched_files.borrow();
         for file in borrowed_files {
@@ -146,7 +147,7 @@ impl Drive {
         }
     }
 
-    pub fn get_all_files(&self, owned_only: bool) -> Result<Vec<FileWrapper>, Error> {
+    pub fn get_all_files(&self, owned_only: bool) -> Result<Vec<FileWrapper>, std::io::Error> {
         let all_files: Vec<FileWrapper> = self.context.get_all_files().unwrap();
         if !owned_only {
             return Ok(all_files);
@@ -160,17 +161,17 @@ impl Drive {
         return Ok(filtered_files);
     }
 
-    pub fn create_file(&self, file_wrapper: &FileWrapper) -> Result<(), Error> {
+    pub async fn create_file(&self, file_wrapper: &FileWrapper) -> Result<(), Box<dyn std::error::Error>> {
         let path = file_wrapper.path.clone();
         let create_dirs_result = create_dir_all(&path.parent().unwrap());
         if create_dirs_result.is_err() {
             error!("Failed to create directory {} with error {}", &path.parent().unwrap().display(), create_dirs_result.unwrap_err());
         }
         if !file_wrapper.mime_type.contains("google") {
-            let response = self.hub.files().get(file_wrapper.id.as_ref()).param("alt", "media").add_scope(Scope::Full).doit();
+            let response = self.hub.files().get(file_wrapper.id.as_ref()).param("alt", "media").add_scope(Scope::Full).doit().await;
             if response.is_ok() {
                 let unwrapped_response = response.unwrap();
-                <Drive>::write_to_file(&path, unwrapped_response)?;
+                <Drive>::write_to_file(&path, unwrapped_response).await?;
             }
         } else {
             <Drive>::write_to_google_file(&file_wrapper, &path)?;
@@ -187,20 +188,12 @@ impl Drive {
         Ok(())
     }
 
-    fn write_to_file(path: &PathBuf, unwrapped_response: (Response, File)) -> Result<(), Error> {
+    async fn write_to_file(path: &PathBuf, unwrapped_response: (Response<Body>, File)) -> Result<(), Box<dyn std::error::Error>> {
         debug!("Creating file {}", path.display());
         let mut file = fs::File::create(path.as_path())?;
-        let mut response = unwrapped_response.0;
-        let mut buf = [0; 1048576];
-        loop {
-            let len = match response.read(&mut buf) {
-                Ok(0) => break,  // EOF.
-                Ok(len) => len,
-                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                Err(err) => return Err(err),
-            };
-            file.write_all(&buf[..len])?;
-        }
+        let response = unwrapped_response.0;
+        let bytes = hyper::body::to_bytes(response.into_body()).await?;
+        file.write_all(&bytes.to_vec())?;
         match file.sync_all() {
             Ok(_) => {
                 debug!("Created file {}", path.display());
@@ -208,12 +201,12 @@ impl Drive {
             }
             Err(error) => {
                 error!("Failed to sync file {} with error {}", path.display(), error);
-                Err(error)
+                Err(Box::new(error))
             }
         }
     }
 
-    fn write_to_google_file(file_wrapper: &FileWrapper, path: &PathBuf) -> Result<(), Error> {
+    fn write_to_google_file(file_wrapper: &FileWrapper, path: &PathBuf) -> Result<(), std::io::Error> {
         debug!("Creating Google file {}", path.display());
         let mut file_content: String = "#!/usr/bin/env bash\nxdg-open ".to_string();
         file_content.push_str(&file_wrapper.web_view_link.borrow().as_ref().unwrap());
@@ -236,11 +229,11 @@ impl Drive {
         }
     }
 
-    pub fn get_local_files(&self) -> Result<Vec<FileWrapper>, Error> {
+    pub fn get_local_files(&self) -> Result<Vec<FileWrapper>, std::io::Error> {
         self.read_local_dir(&self.config.root_dir)
     }
 
-    fn read_local_dir(&self, dir: &PathBuf) -> Result<Vec<FileWrapper>, Error> {
+    fn read_local_dir(&self, dir: &PathBuf) -> Result<Vec<FileWrapper>, std::io::Error> {
         debug!("Traversing {}", dir.display());
         Ok(read_dir(&dir)?
             .flat_map(|res| {
@@ -275,13 +268,13 @@ impl Drive {
             }).collect::<Vec<FileWrapper>>())
     }
 
-    pub fn upload_file(&self, file_wrapper: &FileWrapper) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn upload_file(&self, file_wrapper: &FileWrapper) -> Result<(), Box<dyn std::error::Error>> {
         let fields = "id, kind, name, description, kind, mimeType, parents, ownedByMe, webContentLink, webViewLink, modifiedTime, trashed";
         let response = self.hub.files()
             .create(self.convert_to_file(file_wrapper))
             .add_scope(Scope::Full)
             .param("fields", fields)
-            .upload(fs::File::open(&file_wrapper.path).unwrap(), file_wrapper.mime_type.parse().unwrap())?;
+            .upload(fs::File::open(&file_wrapper.path).unwrap(), file_wrapper.mime_type.parse().unwrap()).await?;
         let mut response_file_wrapper = Drive::convert_to_file_wrapper(&response.1, &file_wrapper.path);
         response_file_wrapper.last_accessed = file_wrapper.last_accessed;
         self.context.store_file(&response_file_wrapper)?;
@@ -298,7 +291,7 @@ impl Drive {
             directory: file.mime_type.as_ref().unwrap() == DIRECTORY_MIME_TYPE,
             web_view_link: file.web_view_link.clone(),
             owned_by_me: file.owned_by_me.unwrap_or(true),
-            last_modified: DateTime::parse_from_rfc3339(file.modified_time.as_ref().unwrap()).unwrap(),
+            last_modified: file.modified_time.unwrap().into(),
             last_accessed: SystemTime::UNIX_EPOCH,
             trashed: file.trashed.unwrap_or(false),
         }

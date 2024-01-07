@@ -3,7 +3,7 @@ use std::time::SystemTime;
 
 use chrono::{DateTime, Local};
 use log::{debug, error};
-use rusqlite::{Connection, Error, NO_PARAMS, Row, Statement};
+use rusqlite::{Connection, Error, named_params, Row, Statement};
 
 use crate::drive::FileWrapper;
 
@@ -30,7 +30,7 @@ impl DbContext {
                 last_modified TEXT NOT NULL,
                 last_accessed TEXT NOT NULL,
                 trashed INTEGER NOT NULL
-            )", NO_PARAMS)?;
+            )", [])?;
         Ok(())
     }
 
@@ -46,26 +46,26 @@ impl DbContext {
         } else {
             self.conn.prepare("INSERT INTO file (id, name, mime_type, path, directory, web_view_link, owned_by_me, last_modified, last_accessed, trashed) VALUES (:id, :name, :mime_type, :path, :directory, :web_view_link, :owned_by_me, :last_modified, :last_accessed, :trashed)")?
         };
-        statement.execute_named(
-            &[
-                (":id", &file_wrapper.id),
-                (":name", &file_wrapper.name),
-                (":mime_type", &file_wrapper.mime_type),
-                (":path", &file_wrapper.path.to_str().unwrap()),
-                (":directory", &file_wrapper.directory),
-                (":web_view_link", &file_wrapper.web_view_link),
-                (":owned_by_me", &file_wrapper.owned_by_me),
-                (":last_modified", &file_wrapper.last_modified.to_rfc3339()),
-                (":last_accessed", &last_accessed_converted.to_rfc3339()),
-                (":trashed", &file_wrapper.trashed)
-            ]
+        statement.execute(
+            named_params!{
+                ":id": &file_wrapper.id,
+                ":name": &file_wrapper.name,
+                ":mime_type": &file_wrapper.mime_type,
+                ":path": &file_wrapper.path.to_str().unwrap(),
+                ":directory": &file_wrapper.directory,
+                ":web_view_link": &file_wrapper.web_view_link,
+                ":owned_by_me": &file_wrapper.owned_by_me,
+                ":last_modified": &file_wrapper.last_modified.to_rfc3339(),
+                ":last_accessed": &last_accessed_converted.to_rfc3339(),
+                ":trashed": &file_wrapper.trashed
+            }
         )?;
         return Ok(());
     }
 
     pub fn get_file(&self, id: &String) -> Option<FileWrapper> {
         let mut statement = self.conn.prepare("SELECT * FROM file where id = :id LIMIT 1").unwrap();
-        let mut rows = statement.query_named(&[(":id", &id)]).unwrap();
+        let mut rows = statement.query(&[(":id", &id)]).unwrap();
         let result = rows.next().unwrap();
         match result {
             Some(row) => Some(DbContext::convert_to_file_wrapper(row)),
@@ -75,7 +75,7 @@ impl DbContext {
 
     pub fn get_all_files(&self) -> Result<Vec<FileWrapper>, Error> {
         let mut statement = self.conn.prepare("SELECT * FROM file")?;
-        let mut rows = statement.query(NO_PARAMS)?;
+        let mut rows = statement.query([])?;
         let mut files = Vec::new();
         while let Some(row) = rows.next()? {
             files.push(
@@ -108,7 +108,7 @@ impl DbContext {
         debug!("Updating last_accessed to {}", &last_accessed_converted.to_rfc3339());
         debug!("Autocommit: {}", self.conn.is_autocommit());
         let mut statement = self.conn.prepare("UPDATE file SET last_accessed = :last_accessed WHERE id = :id")?;
-        let update_result = statement.execute_named(
+        let update_result = statement.execute(
             &[
                 (":last_accessed", &last_accessed_converted.to_rfc3339()),
                 (":id", &id)
@@ -162,7 +162,7 @@ mod tests {
         let result = dbcontext.init();
         assert!(result.is_ok());
 
-        let table = connection.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='file'", NO_PARAMS, |row| -> Result<String> {
+        let table = connection.query_row("SELECT sql FROM sqlite_master WHERE type='table' AND name='file'", [], |row| -> Result<String> {
             row.get(0)
         });
         assert_eq!(table, Ok("CREATE TABLE file (\n                id TEXT PRIMARY KEY,\n                name TEXT NOT NULL,\n                mime_type TEXT NOT NULL,\n                path TEXT NOT NULL,\n                directory INTEGER NOT NULL,\n                web_view_link TEXT,\n                owned_by_me INTEGER NOT NULL,\n                last_modified TEXT NOT NULL,\n                last_accessed TEXT NOT NULL,\n                trashed INTEGER NOT NULL\n            )".to_string()));
@@ -192,7 +192,7 @@ mod tests {
         let result = dbcontext.store_file(&expected_file_wrapper);
         assert!(result.is_ok());
 
-        let actual_file_wrapper = connection.query_row("SELECT * FROM file", NO_PARAMS, |row: &Row| -> Result<FileWrapper> {
+        let actual_file_wrapper = connection.query_row("SELECT * FROM file", [], |row: &Row| -> Result<FileWrapper> {
             let path: String = row.get(3).unwrap();
             let last_changed: String = row.get(7).unwrap();
             let last_accessed: String = row.get(8).unwrap();
@@ -249,7 +249,7 @@ mod tests {
         let result = dbcontext.store_file(&updated_file_wrapper);
         assert!(result.is_ok());
 
-        let actual_file_wrapper = connection.query_row("SELECT * FROM file", NO_PARAMS, |row: &Row| -> Result<FileWrapper> {
+        let actual_file_wrapper = connection.query_row("SELECT * FROM file", [], |row: &Row| -> Result<FileWrapper> {
             let path: String = row.get(3).unwrap();
             let last_changed: String = row.get(7).unwrap();
             let last_accessed: String = row.get(8).unwrap();
@@ -306,7 +306,7 @@ mod tests {
         let result = dbcontext.store_file(&updated_file_wrapper);
         assert!(result.is_ok());
 
-        let actual_file_wrapper = connection.query_row("SELECT * FROM file", NO_PARAMS, |row: &Row| -> Result<FileWrapper> {
+        let actual_file_wrapper = connection.query_row("SELECT * FROM file", [], |row: &Row| -> Result<FileWrapper> {
             let path: String = row.get(3).unwrap();
             let last_changed: String = row.get(7).unwrap();
             let last_accessed: String = row.get(8).unwrap();
@@ -440,7 +440,7 @@ mod tests {
         let time = SystemTime::now();
         let result = dbcontext.update_last_accessed(&file_wrapper.id, &time);
         assert!(result.is_ok());
-        let stored_last_accessed = connection.query_row("SELECT last_accessed FROM file", NO_PARAMS, |row: &Row| -> Result<SystemTime> {
+        let stored_last_accessed = connection.query_row("SELECT last_accessed FROM file", [], |row: &Row| -> Result<SystemTime> {
             let last_accessed: String = row.get(0).unwrap();
             Ok(SystemTime::from(DateTime::parse_from_rfc3339(&last_accessed).unwrap()))
         });
@@ -475,7 +475,7 @@ mod tests {
         let expected_error = Error::SqliteFailure(rusqlite::ffi::Error { code: ErrorCode::OutOfMemory, extended_code: 1 }, Some("Something went wrong".to_string()));
         assert_eq!(result.unwrap_err(), expected_error);
 
-        let count: Result<i32> = connection.query_row("SELECT COUNT(*) FROM file", NO_PARAMS, |row| row.get(0));
+        let count: Result<i32> = connection.query_row("SELECT COUNT(*) FROM file", [], |row| row.get(0));
         assert_eq!(count.unwrap(), 0);
     }
 
@@ -506,7 +506,7 @@ mod tests {
         });
         assert!(result.is_ok());
 
-        let actual_file_wrapper = connection.query_row("SELECT * FROM file", NO_PARAMS, |row: &Row| -> Result<FileWrapper> {
+        let actual_file_wrapper = connection.query_row("SELECT * FROM file", [], |row: &Row| -> Result<FileWrapper> {
             let path: String = row.get(3).unwrap();
             let last_changed: String = row.get(7).unwrap();
             let last_accessed: String = row.get(8).unwrap();

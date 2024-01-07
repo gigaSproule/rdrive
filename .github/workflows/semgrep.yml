@@ -1,0 +1,35 @@
+name: "Run Semgrep"
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "main"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: "${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  semgrep:
+    runs-on: "ubuntu-latest"
+    container:
+      image: "returntocorp/semgrep"
+    if: (github.actor != 'dependabot[bot]')
+    env:
+      # Scan changed files in PRs, block on new issues only (existing issues ignored)
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+      SEMGREP_REPO_URL: ${{ github.repositoryUrl }}
+      SEMGREP_BRANCH: ${{ github.ref_name }}
+      SEMGREP_BASELINE_REF: ${{ github.base_ref }}
+      # Change job timeout (default is 1800 seconds; set to 0 to disable)
+      # SEMGREP_TIMEOUT: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Run semgrep
+        run: semgrep ci
