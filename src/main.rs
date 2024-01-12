@@ -3,14 +3,14 @@ extern crate hyper;
 extern crate hyper_rustls;
 extern crate yup_oauth2 as oauth2;
 
-use std::{env, fs, thread};
 use std::error::Error;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
+use std::{env, fs, thread};
 
 use drive3::DriveHub;
-use hyper::Client;
 use hyper::client::HttpConnector;
+use hyper::Client;
 use hyper_rustls::HttpsConnector;
 use log::{debug, error, LevelFilter, SetLoggerError};
 use log4rs::append::console::ConsoleAppender;
@@ -25,8 +25,8 @@ use rusqlite::Connection;
 
 use crate::drive::{Drive, FileWrapper};
 
-mod drive;
 mod dbcontext;
+mod drive;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -46,17 +46,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         let local_files: Vec<FileWrapper> = drive.get_local_files().unwrap();
         for file_wrapper in &local_files {
-            if existing_file_wrappers.iter().any(|f| f.path.to_str().unwrap() == file_wrapper.path.to_str().unwrap()) {
-                debug!("Not handling {} as a local file as it's already been handled", file_wrapper.path.display())
+            if existing_file_wrappers
+                .iter()
+                .any(|f| f.path.to_str().unwrap() == file_wrapper.path.to_str().unwrap())
+            {
+                debug!(
+                    "Not handling {} as a local file as it's already been handled",
+                    file_wrapper.path.display()
+                )
             } else {
                 if file_wrapper.directory {
                     debug!("Can't currently handle new directories");
                     continue;
                 }
-                debug!("Upload {} to Google Drive for the first time", file_wrapper.path.display());
+                debug!(
+                    "Upload {} to Google Drive for the first time",
+                    file_wrapper.path.display()
+                );
                 let result = drive.upload_file(file_wrapper).await;
                 if result.is_err() {
-                    error!("Error occurred whilst uploading {} to Google Drive for the first time. {}", file_wrapper.path.display(), result.unwrap_err())
+                    error!(
+                        "Error occurred whilst uploading {} to Google Drive for the first time. {}",
+                        file_wrapper.path.display(),
+                        result.unwrap_err()
+                    )
                 }
             }
         }
@@ -69,28 +82,52 @@ async fn handle_existing_file(drive: &Drive, file_wrapper: &FileWrapper) {
         return;
     }
     if !file_wrapper.path.exists() {
-        debug!("Creating file {} for the first time", file_wrapper.path.display());
+        debug!(
+            "Creating file {} for the first time",
+            file_wrapper.path.display()
+        );
         let created = drive.create_file(file_wrapper).await;
         if created.is_err() {
             error!("Unable to create file {}.", file_wrapper.path.display())
         }
     } else {
-        let local_modified_time = file_wrapper.path.metadata().unwrap().modified().unwrap().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
-        let remote_modified_time = file_wrapper.last_accessed.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+        let local_modified_time = file_wrapper
+            .path
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let remote_modified_time = file_wrapper
+            .last_accessed
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
         if remote_modified_time == 0 {
-            debug!("Remote modified time wasn't updated properly for file {} when it was created", file_wrapper.path.display());
+            debug!(
+                "Remote modified time wasn't updated properly for file {} when it was created",
+                file_wrapper.path.display()
+            );
             let created = drive.create_file(file_wrapper).await;
             if created.is_err() {
                 error!("Unable to create file {}.", file_wrapper.path.display())
             }
         } else if local_modified_time > remote_modified_time {
-            debug!("File {} has changed locally since last sync", file_wrapper.path.display());
+            debug!(
+                "File {} has changed locally since last sync",
+                file_wrapper.path.display()
+            );
             let uploaded = drive.upload_file(file_wrapper).await;
             if uploaded.is_err() {
                 error!("Unable to create file {}.", file_wrapper.path.display())
             }
         } else if local_modified_time < remote_modified_time {
-            debug!("File {} has changed on remote since last sync", file_wrapper.path.display());
+            debug!(
+                "File {} has changed on remote since last sync",
+                file_wrapper.path.display()
+            );
             let created = drive.create_file(file_wrapper).await;
             if created.is_err() {
                 error!("Unable to create file {}.", file_wrapper.path.display())
@@ -110,14 +147,17 @@ fn configure_logging() -> Result<Handle, SetLoggerError> {
         .unwrap();
 
     let config = Config::builder()
-        .appender(Appender::builder()
-            .filter(Box::new(ThresholdFilter::new(LevelFilter::Warn)))
-            .build("stdout", Box::new(stdout)))
-        .appender(Appender::builder()
-            .build("file", Box::new(file)))
-        .logger(Logger::builder()
-            .appender("file")
-            .build("rdrive", LevelFilter::Debug))
+        .appender(
+            Appender::builder()
+                .filter(Box::new(ThresholdFilter::new(LevelFilter::Warn)))
+                .build("stdout", Box::new(stdout)),
+        )
+        .appender(Appender::builder().build("file", Box::new(file)))
+        .logger(
+            Logger::builder()
+                .appender("file")
+                .build("rdrive", LevelFilter::Debug),
+        )
         .build(Root::builder().appender("stdout").build(LevelFilter::Warn))
         .unwrap();
 
@@ -125,13 +165,30 @@ fn configure_logging() -> Result<Handle, SetLoggerError> {
 }
 
 fn get_client() -> Client<HttpsConnector<HttpConnector>> {
-    Client::builder().build(hyper_rustls::HttpsConnectorBuilder::new().with_native_roots().expect("msg").https_or_http().enable_http1().build())
+    Client::builder().build(
+        hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("msg")
+            .https_or_http()
+            .enable_http1()
+            .build(),
+    )
 }
 
 async fn get_authenticator() -> Authenticator<drive3::hyper_rustls::HttpsConnector<HttpConnector>> {
-    let secret: ApplicationSecret = yup_oauth2::read_application_secret("../secret.json").await.expect("secret.json");
-    let token_file = &get_base_data_path().join("temp-key").to_str().unwrap().to_owned();
-    InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::Interactive).persist_tokens_to_disk(token_file).build().await.unwrap()
+    let secret: ApplicationSecret = yup_oauth2::read_application_secret("../secret.json")
+        .await
+        .expect("secret.json");
+    let token_file = &get_base_data_path()
+        .join("temp-key")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::Interactive)
+        .persist_tokens_to_disk(token_file)
+        .build()
+        .await
+        .unwrap()
 }
 
 fn get_db_connection() -> Connection {
@@ -143,9 +200,11 @@ fn get_db_connection() -> Connection {
 fn get_base_data_path() -> PathBuf {
     let data_path = match env::consts::OS {
         "windows" => PathBuf::from(env::var("LOCALAPPDATA").unwrap()),
-        "linux" => PathBuf::from(env::var("XDG_DATA_HOME").unwrap_or(env::var("HOME").unwrap() + "/.local/share")),
+        "linux" => PathBuf::from(
+            env::var("XDG_DATA_HOME").unwrap_or(env::var("HOME").unwrap() + "/.local/share"),
+        ),
         "macos" => PathBuf::from(env::var("HOME").unwrap() + "/Library"),
-        _ => PathBuf::new()
+        _ => PathBuf::new(),
     };
     data_path.join("rdrive")
 }
@@ -153,9 +212,13 @@ fn get_base_data_path() -> PathBuf {
 fn get_base_log_path() -> PathBuf {
     let log_path = match env::consts::OS {
         "windows" => PathBuf::from(env::var("LOCALAPPDATA").unwrap()),
-        "linux" => PathBuf::from(env::var("XDG_DATA_HOME").unwrap_or(env::var("HOME").unwrap() + "/.local/share")),
-        "macos" => PathBuf::from(env::var("HOME").unwrap()).join("Library").join("Logs"),
-        _ => PathBuf::new()
+        "linux" => PathBuf::from(
+            env::var("XDG_DATA_HOME").unwrap_or(env::var("HOME").unwrap() + "/.local/share"),
+        ),
+        "macos" => PathBuf::from(env::var("HOME").unwrap())
+            .join("Library")
+            .join("Logs"),
+        _ => PathBuf::new(),
     };
     log_path.join("rdrive")
 }
