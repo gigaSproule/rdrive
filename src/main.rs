@@ -193,8 +193,8 @@ async fn get_authenticator() -> Authenticator<drive3::hyper_rustls::HttpsConnect
 
 fn get_db_connection() -> Connection {
     let db_file = &get_base_data_path().join("rdrive.db");
-    fs::create_dir_all(&db_file.parent().unwrap()).unwrap();
-    return Connection::open(db_file).unwrap();
+    fs::create_dir_all(db_file.parent().unwrap()).unwrap();
+    Connection::open(db_file).unwrap()
 }
 
 fn get_base_data_path() -> PathBuf {

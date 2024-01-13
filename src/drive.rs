@@ -50,7 +50,7 @@ impl Drive {
             file_list_call = file_list_call.page_token(page_token.unwrap().as_str())
         }
         let hub_result = file_list_call.doit().await;
-        let fetched_files = match hub_result {
+        match hub_result {
             Ok(x) => {
                 let mut files = x.1.files.unwrap();
                 if x.1.next_page_token.is_some() {
@@ -64,8 +64,7 @@ impl Drive {
                 error!("Error: {}", e);
                 Vec::new()
             }
-        };
-        return fetched_files;
+        }
     }
 
     pub async fn store_fetched_files(&self) -> Result<(), rusqlite::Error> {
@@ -78,11 +77,11 @@ impl Drive {
         let stored_files_result = self.context.transaction(|| -> Result<(), rusqlite::Error> {
             for file in borrowed_files {
                 let mut path = self.config.root_dir.clone();
-                path.push(self.get_path(&file, &files_by_id));
+                path.push(self.get_path(file, &files_by_id));
                 if self.should_be_ignored(&path) {
                     continue;
                 }
-                let file_wrapper = Drive::convert_to_file_wrapper(file, &mut path);
+                let file_wrapper = Drive::convert_to_file_wrapper(file, &path);
                 self.context.store_file(&file_wrapper)?;
             }
             Ok(())
@@ -100,19 +99,19 @@ impl Drive {
         Ok(())
     }
 
-    fn should_be_ignored(&self, path: &PathBuf) -> bool {
+    fn should_be_ignored(&self, path: &Path) -> bool {
         if !self.config.include.is_empty() {
             return self
                 .config
                 .include
                 .iter()
-                .any(|pattern| pattern.matches_path(path.as_path()));
+                .any(|pattern| pattern.matches_path(path));
         }
         return self
             .config
             .exclude
             .iter()
-            .any(|pattern| pattern.matches_path(path.as_path()));
+            .any(|pattern| pattern.matches_path(path));
     }
 
     fn get_path(&self, file: &File, files_by_id: &HashMap<String, File>) -> PathBuf {
@@ -139,30 +138,28 @@ impl Drive {
         let mut path = PathBuf::new();
         path.push(Drive::clean_file_name(&parent_name));
         while parent.is_some() {
-            let parents = parent.unwrap().parents.as_ref();
-            if parents.is_none() {
-                parent = None;
-            } else {
-                let parent_id = parents.unwrap().first();
-                if parent_id.is_none() {
-                    parent = None;
-                } else {
-                    parent = files_by_id.get(parent_id.unwrap());
-                    if parent.is_some() {
-                        let parent_name = Drive::clean_file_name(&parent.unwrap().name);
-                        path = Path::new(&parent_name).join(&path.as_path());
+            if let Some(parents) = parent.unwrap().parents.as_ref() {
+                if let Some(parent_id) = parents.first() {
+                    parent = files_by_id.get(parent_id);
+                    if let Some(parent_file) = parent {
+                        let parent_name = Drive::clean_file_name(&parent_file.name);
+                        path = Path::new(&parent_name).join(path.as_path());
                     }
+                } else {
+                    parent = None;
                 }
+            } else {
+                parent = None;
             }
         }
-        return path.join(Drive::clean_file_name(&file.name));
+        path.join(Drive::clean_file_name(&file.name))
     }
 
     fn clean_file_name(file_name: &Option<String>) -> String {
         match env::consts::OS {
-            "windows" => file_name.as_ref().unwrap().replace("\\", "_"),
-            "linux" => file_name.as_ref().unwrap().replace("/", "_"),
-            "macos" => file_name.as_ref().unwrap().replace("/", "_"),
+            "windows" => file_name.as_ref().unwrap().replace('\\', "_"),
+            "linux" => file_name.as_ref().unwrap().replace('/', "_"),
+            "macos" => file_name.as_ref().unwrap().replace('/', "_"),
             _ => file_name.clone().unwrap(),
         }
     }
@@ -178,7 +175,7 @@ impl Drive {
                 filtered_files.push(file);
             }
         }
-        return Ok(filtered_files);
+        Ok(filtered_files)
     }
 
     pub async fn create_file(
@@ -186,7 +183,7 @@ impl Drive {
         file_wrapper: &FileWrapper,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let path = file_wrapper.path.clone();
-        let create_dirs_result = create_dir_all(&path.parent().unwrap());
+        let create_dirs_result = create_dir_all(path.parent().unwrap());
         if create_dirs_result.is_err() {
             error!(
                 "Failed to create directory {} with error {}",
@@ -208,7 +205,7 @@ impl Drive {
                 <Drive>::write_to_file(&path, unwrapped_response).await?;
             }
         } else {
-            <Drive>::write_to_google_file(&file_wrapper, &path)?;
+            <Drive>::write_to_google_file(file_wrapper, &path)?;
         };
         let metadata = path.metadata();
         if metadata.is_err() {
@@ -232,14 +229,14 @@ impl Drive {
     }
 
     async fn write_to_file(
-        path: &PathBuf,
+        path: &Path,
         unwrapped_response: (Response<Body>, File),
     ) -> Result<(), Box<dyn std::error::Error>> {
         debug!("Creating file {}", path.display());
-        let mut file = fs::File::create(path.as_path())?;
+        let mut file = fs::File::create(path)?;
         let response = unwrapped_response.0;
         let bytes = hyper::body::to_bytes(response.into_body()).await?;
-        file.write_all(&bytes.to_vec())?;
+        file.write_all(&bytes)?;
         match file.sync_all() {
             Ok(_) => {
                 debug!("Created file {}", path.display());
@@ -256,17 +253,13 @@ impl Drive {
         }
     }
 
-    fn write_to_google_file(
-        file_wrapper: &FileWrapper,
-        path: &PathBuf,
-    ) -> Result<(), std::io::Error> {
+    fn write_to_google_file(file_wrapper: &FileWrapper, path: &Path) -> Result<(), std::io::Error> {
         debug!("Creating Google file {}", path.display());
         let mut file_content: String = "#!/usr/bin/env bash\nxdg-open ".to_string();
-        file_content.push_str(&file_wrapper.web_view_link.borrow().as_ref().unwrap());
-        let mut file = fs::File::create(path.as_path())?;
+        file_content.push_str(file_wrapper.web_view_link.borrow().as_ref().unwrap());
+        let mut file = fs::File::create(path)?;
         let write_result = file.write_all(file_content.as_bytes());
-        if write_result.is_err() {
-            let error = write_result.unwrap_err();
+        if let Err(error) = write_result {
             error!(
                 "Failed to write data to Google file {} with error {}",
                 path.display(),
@@ -296,7 +289,7 @@ impl Drive {
 
     fn read_local_dir(&self, dir: &PathBuf) -> Result<Vec<FileWrapper>, std::io::Error> {
         debug!("Traversing {}", dir.display());
-        Ok(read_dir(&dir)?
+        Ok(read_dir(dir)?
             .flat_map(|res| {
                 res.into_iter().flat_map(|e| {
                     let metadata = e.metadata().unwrap();
@@ -360,12 +353,12 @@ impl Drive {
         Ok(())
     }
 
-    fn convert_to_file_wrapper(file: &File, path: &PathBuf) -> FileWrapper {
+    fn convert_to_file_wrapper(file: &File, path: &Path) -> FileWrapper {
         FileWrapper {
             id: file.id.clone().unwrap(),
             name: file.name.clone().unwrap(),
             mime_type: file.mime_type.clone().unwrap(),
-            path: path.clone(),
+            path: path.to_path_buf(),
             directory: file.mime_type.as_ref().unwrap() == DIRECTORY_MIME_TYPE,
             web_view_link: file.web_view_link.clone(),
             owned_by_me: file.owned_by_me.unwrap_or(true),
@@ -382,12 +375,11 @@ impl Drive {
             Some(file_wrapper.clone().mime_type)
         };
         let path_parent = file_wrapper.path.parent();
-        let parents = if path_parent.is_some() {
-            if path_parent.unwrap() == self.config.root_dir {
+        let parents = if let Some(path) = path_parent {
+            if path == self.config.root_dir {
                 None
             } else {
-                Some(vec![path_parent
-                    .unwrap()
+                Some(vec![path
                     .file_name()
                     .unwrap()
                     .to_str()
@@ -409,8 +401,7 @@ impl Drive {
         let config_file = Drive::get_config_file();
         let stored_config: serde_json::Result<StoredConfig> =
             serde_json::from_reader(BufReader::new(&config_file));
-        if stored_config.is_ok() {
-            let config = stored_config.unwrap();
+        if let Ok(config) = stored_config {
             return Config {
                 exclude: config
                     .exclude
@@ -436,18 +427,18 @@ impl Drive {
         if write_result.is_err() {
             error!("{}", write_result.unwrap_err());
         }
-        return Config {
+        Config {
             exclude: Vec::new(),
             include: Vec::new(),
             root_dir: default_root_dir.clone(),
-        };
+        }
     }
 
     fn get_home_dir() -> String {
-        return match env::consts::OS {
+        match env::consts::OS {
             "windows" => env::var("USERPROFILE").unwrap(),
             _ => env::var("HOME").unwrap(),
-        };
+        }
     }
 
     fn get_config_file() -> fs::File {
@@ -473,14 +464,14 @@ impl Drive {
     }
 
     fn get_base_config_path() -> String {
-        return match env::consts::OS {
+        match env::consts::OS {
             "windows" => env::var("LOCALAPPDATA").unwrap(),
             "linux" => {
                 env::var("XDG_CONFIG_HOME").unwrap_or(env::var("HOME").unwrap() + "/.config")
             }
             "macos" => env::var("HOME").unwrap() + "/Library/Preferences",
             _ => String::new(),
-        };
+        }
     }
 }
 

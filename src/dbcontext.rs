@@ -13,7 +13,7 @@ pub struct DbContext {
 
 impl DbContext {
     pub fn new(conn: Connection) -> Self {
-        return DbContext { conn };
+        DbContext { conn }
     }
 
     pub fn init(&self) -> Result<(), Error> {
@@ -61,7 +61,7 @@ impl DbContext {
             ":last_accessed": &last_accessed_converted.to_rfc3339(),
             ":trashed": &file_wrapper.trashed
         })?;
-        return Ok(());
+        Ok(())
     }
 
     pub fn get_file(&self, id: &String) -> Option<FileWrapper> {
@@ -71,10 +71,7 @@ impl DbContext {
             .unwrap();
         let mut rows = statement.query(&[(":id", &id)]).unwrap();
         let result = rows.next().unwrap();
-        match result {
-            Some(row) => Some(DbContext::convert_to_file_wrapper(row)),
-            _ => None,
-        }
+        result.map(DbContext::convert_to_file_wrapper)
     }
 
     pub fn get_all_files(&self) -> Result<Vec<FileWrapper>, Error> {
@@ -82,9 +79,9 @@ impl DbContext {
         let mut rows = statement.query([])?;
         let mut files = Vec::new();
         while let Some(row) = rows.next()? {
-            files.push(DbContext::convert_to_file_wrapper(&row));
+            files.push(DbContext::convert_to_file_wrapper(row));
         }
-        return Ok(files);
+        Ok(files)
     }
 
     fn convert_to_file_wrapper(row: &Row) -> FileWrapper {
@@ -110,7 +107,7 @@ impl DbContext {
         id: &String,
         last_accessed: &SystemTime,
     ) -> Result<(), Error> {
-        let last_accessed_converted: DateTime<Local> = DateTime::from(last_accessed.clone());
+        let last_accessed_converted: DateTime<Local> = DateTime::from(*last_accessed);
         debug!(
             "Updating last_accessed to {}",
             &last_accessed_converted.to_rfc3339()
@@ -121,7 +118,7 @@ impl DbContext {
             .prepare("UPDATE file SET last_accessed = :last_accessed WHERE id = :id")?;
         let update_result = statement.execute(&[
             (":last_accessed", &last_accessed_converted.to_rfc3339()),
-            (":id", &id),
+            (":id", id),
         ]);
         match update_result {
             Ok(num_rows) => {
@@ -157,7 +154,6 @@ mod tests {
     use rusqlite::ffi::ErrorCode;
     use rusqlite::Result;
     use serial_test::serial;
-    use Connection;
 
     use super::*;
 
@@ -323,7 +319,7 @@ mod tests {
             directory: true,
             web_view_link: Some("updated web_view_link".to_string()),
             owned_by_me: false,
-            last_modified: original_file_wrapper.last_modified.clone(),
+            last_modified: original_file_wrapper.last_modified,
             last_accessed: SystemTime::from(
                 Utc::now().with_minute(Utc::now().minute() + 1).unwrap(),
             ),
@@ -588,13 +584,13 @@ mod tests {
 
     fn insert_file_wrapper(connection: &Connection, file_wrapper: &FileWrapper) {
         let last_accessed_converted: DateTime<Local> = DateTime::from(file_wrapper.last_accessed);
-        let result = connection.execute("INSERT INTO file (id, name, mime_type, path, directory, web_view_link, owned_by_me, last_modified, last_accessed, trashed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", &[
+        let result = connection.execute("INSERT INTO file (id, name, mime_type, path, directory, web_view_link, owned_by_me, last_modified, last_accessed, trashed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
             &file_wrapper.id,
             &file_wrapper.name,
             &file_wrapper.mime_type,
             &file_wrapper.path.to_str().unwrap().to_string(),
             &(file_wrapper.directory as i32).to_string(),
-            &file_wrapper.web_view_link.borrow().as_ref().unwrap(),
+            file_wrapper.web_view_link.borrow().as_ref().unwrap(),
             &(file_wrapper.owned_by_me as i32).to_string(),
             &file_wrapper.last_modified.to_rfc3339(),
             &last_accessed_converted.to_rfc3339(),
@@ -603,7 +599,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    const DB_PATH: &'static str = "test.db";
+    const DB_PATH: &str = "test.db";
 
     fn get_connection() -> Connection {
         Connection::open("test.db").unwrap()
