@@ -17,6 +17,7 @@ concurrency:
 jobs:
   semgrep:
     runs-on: "ubuntu-latest"
+    timeout-minutes: 30
     container:
       image: "returntocorp/semgrep"
     if: (github.actor != 'dependabot[bot]')
