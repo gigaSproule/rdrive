@@ -150,7 +150,7 @@ mod tests {
     use std::fs::remove_file;
 
     use chrono::offset::Utc;
-    use chrono::Timelike;
+    use chrono::{Duration, Timelike};
     use rusqlite::ffi::ErrorCode;
     use rusqlite::Result;
     use serial_test::serial;
@@ -320,9 +320,7 @@ mod tests {
             web_view_link: Some("updated web_view_link".to_string()),
             owned_by_me: false,
             last_modified: original_file_wrapper.last_modified,
-            last_accessed: SystemTime::from(
-                Utc::now().with_minute(Utc::now().minute() + 1).unwrap(),
-            ),
+            last_accessed: SystemTime::from(Utc::now() + Duration::minutes(1)),
             trashed: true,
         };
         insert_file_wrapper(&connection, &original_file_wrapper);
