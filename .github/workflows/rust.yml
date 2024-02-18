@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install required libs for build
-        run: sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
       - name: Run formatting check
         run: cargo fmt --all -- --check
       - name: Run lint
