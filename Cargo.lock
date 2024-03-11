@@ -427,8 +427,8 @@ checksum = "34c72c9baded4d06742eaaa5def6158f9e28d20a679ad1d5f5deb2bae8358052"
 dependencies = [
  "base64 0.13.1",
  "chrono",
- "http",
- "hyper",
+ "http 0.2.12",
+ "hyper 0.14.28",
  "itertools 0.10.5",
  "mime",
  "serde",
@@ -448,8 +448,8 @@ checksum = "479d55d400d8714e341586b7972d2577043995fa1ca2f782668b915aced56d16"
 dependencies = [
  "anyhow",
  "google-apis-common",
- "http",
- "hyper",
+ "http 0.2.12",
+ "hyper 0.14.28",
  "hyper-rustls 0.24.2",
  "itertools 0.10.5",
  "mime",
@@ -471,7 +471,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "futures-util",
- "http",
+ "http 0.2.12",
  "indexmap 2.2.5",
  "slab",
  "tokio",
@@ -528,14 +528,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "http"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21b9ddb458710bc376481b842f5da65cdf31522de232c1ca8146abce2a358258"
+dependencies = [
+ "bytes",
+ "fnv",
+ "itoa",
+]
+
+[[package]]
 name = "http-body"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ceab25649e9960c0311ea418d17bee82c0dcec1bd053b5f9a66e265a693bed2"
 dependencies = [
  "bytes",
- "http",
+ "http 0.2.12",
  "pin-project-lite",
+]
+
+[[package]]
+name = "http-body"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cac85db508abc24a2e48553ba12a996e87244a0395ce011e62b37158745d643"
+dependencies = [
+ "bytes",
+ "http 1.1.0",
 ]
 
 [[package]]
@@ -567,8 +588,8 @@ dependencies = [
  "futures-core",
  "futures-util",
  "h2",
- "http",
- "http-body",
+ "http 0.2.12",
+ "http-body 0.4.6",
  "httparse",
  "httpdate",
  "itoa",
@@ -581,14 +602,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "hyper"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "186548d73ac615b32a73aafe38fb4f56c0d340e110e5a200bcadbaf2e199263a"
+dependencies = [
+ "bytes",
+ "http 1.1.0",
+ "http-body 1.0.0",
+ "pin-project-lite",
+ "smallvec",
+ "tokio",
+ "want",
+]
+
+[[package]]
 name = "hyper-rustls"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec3efd23720e2049821a693cbc7e65ea87c72f1c58ff2f9522ff332b1491e590"
 dependencies = [
  "futures-util",
- "http",
- "hyper",
+ "http 0.2.12",
+ "hyper 0.14.28",
  "log",
  "rustls 0.21.10",
  "rustls-native-certs 0.6.3",
@@ -603,8 +639,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "399c78f9338483cb7e630c8474b07268983c6bd5acee012e4211f9f7bb21b070"
 dependencies = [
  "futures-util",
- "http",
- "hyper",
+ "http 0.2.12",
+ "hyper 0.14.28",
  "log",
  "rustls 0.22.2",
  "rustls-native-certs 0.7.0",
@@ -1026,7 +1062,7 @@ dependencies = [
  "futures",
  "glob",
  "google-drive3",
- "hyper",
+ "hyper 1.2.0",
  "hyper-rustls 0.25.0",
  "log",
  "log4rs",
@@ -1962,8 +1998,8 @@ dependencies = [
  "async-trait",
  "base64 0.21.7",
  "futures",
- "http",
- "hyper",
+ "http 0.2.12",
+ "hyper 0.14.28",
  "hyper-rustls 0.24.2",
  "itertools 0.12.1",
  "log",
