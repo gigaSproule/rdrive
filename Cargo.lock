@@ -1954,9 +1954,9 @@ checksum = "32b752e52a2da0ddfbdbcc6fceadfeede4c939ed16d13e648833a61dfb611ed8"
 
 [[package]]
 name = "yup-oauth2"
-version = "8.3.2"
+version = "8.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b61da40aeb0907a65f7fb5c1de83c5a224d6a9ebb83bf918588a2bb744d636b8"
+checksum = "45b7ff561fdc7809a2adad8bce73e157d01129074098e6405d0d7dfa2d087782"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1964,7 +1964,7 @@ dependencies = [
  "futures",
  "http",
  "hyper",
- "hyper-rustls 0.24.2",
+ "hyper-rustls 0.25.0",
  "itertools 0.12.1",
  "log",
  "percent-encoding 2.3.1",
