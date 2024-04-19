@@ -175,7 +175,7 @@ fn get_client() -> Client<HttpsConnector<HttpConnector>> {
     )
 }
 
-async fn get_authenticator() -> Authenticator<drive3::hyper_rustls::HttpsConnector<HttpConnector>> {
+async fn get_authenticator() -> Authenticator<HttpsConnector<HttpConnector>> {
     let secret: ApplicationSecret = yup_oauth2::read_application_secret("../secret.json")
         .await
         .expect("secret.json");
