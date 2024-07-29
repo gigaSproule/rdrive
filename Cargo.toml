@@ -20,7 +20,7 @@ mime_guess = "2.0.5"
 regex = "1"
 rusqlite = "0.32.0"
 serde = { version = "^1.0.204", features = ["derive"] }
-serde_json = "^1.0.120"
+serde_json = "^1.0.121"
 tokio = { version = "1.38.1", features = ["full"] }
 yup-oauth2 = "^8.3.3"
 serial_test = "3.1.1"
