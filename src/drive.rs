@@ -7,10 +7,12 @@ use std::{borrow::Borrow, collections::HashMap, env, fs, path::Path};
 use async_recursion::async_recursion;
 use chrono::{DateTime, FixedOffset, Local};
 use drive3::api::{File, Scope};
+use drive3::common::{to_bytes, Body};
+use drive3::hyper::Response;
+use drive3::hyper_rustls::HttpsConnector;
+use drive3::hyper_util::client::legacy::connect::HttpConnector;
 use drive3::DriveHub;
 use glob::Pattern;
-use hyper::{body::Body, client::HttpConnector, Response};
-use hyper_rustls::HttpsConnector;
 use log::{debug, error};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -235,7 +237,7 @@ impl Drive {
         debug!("Creating file {}", path.display());
         let mut file = fs::File::create(path)?;
         let response = unwrapped_response.0;
-        let bytes = hyper::body::to_bytes(response.into_body()).await?;
+        let bytes = to_bytes(response.into_body()).await.unwrap();
         file.write_all(&bytes)?;
         match file.sync_all() {
             Ok(_) => {
