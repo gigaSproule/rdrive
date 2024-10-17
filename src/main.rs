@@ -1,17 +1,15 @@
 extern crate google_drive3 as drive3;
-extern crate hyper;
-extern crate hyper_rustls;
-extern crate yup_oauth2 as oauth2;
 
 use std::error::Error;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 use std::{env, fs, thread};
 
-use drive3::DriveHub;
-use hyper::client::HttpConnector;
-use hyper::Client;
-use hyper_rustls::HttpsConnector;
+use drive3::common::Body;
+use drive3::hyper_rustls::HttpsConnector;
+use drive3::hyper_util::client::legacy::connect::HttpConnector;
+use drive3::hyper_util::client::legacy::Client;
+use drive3::{hyper_rustls, hyper_util, yup_oauth2, DriveHub};
 use log::{debug, error, LevelFilter, SetLoggerError};
 use log4rs::append::console::ConsoleAppender;
 use log4rs::append::file::FileAppender;
@@ -19,9 +17,9 @@ use log4rs::config::{Appender, Config, Logger, Root};
 use log4rs::encode::pattern::PatternEncoder;
 use log4rs::filter::threshold::ThresholdFilter;
 use log4rs::Handle;
-use oauth2::authenticator::Authenticator;
-use oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 use rusqlite::Connection;
+use yup_oauth2::authenticator::Authenticator;
+use yup_oauth2::{ApplicationSecret, InstalledFlowAuthenticator, InstalledFlowReturnMethod};
 
 use crate::drive::{Drive, FileWrapper};
 
@@ -164,8 +162,8 @@ fn configure_logging() -> Result<Handle, SetLoggerError> {
     log4rs::init_config(config)
 }
 
-fn get_client() -> Client<HttpsConnector<HttpConnector>> {
-    Client::builder().build(
+fn get_client() -> Client<HttpsConnector<HttpConnector>, Body> {
+    Client::builder(hyper_util::rt::TokioExecutor::new()).build(
         hyper_rustls::HttpsConnectorBuilder::new()
             .with_native_roots()
             .expect("msg")
