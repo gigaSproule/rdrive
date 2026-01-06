@@ -48,8 +48,8 @@ impl Drive {
             .list()
             .add_scope(Scope::Full)
             .param("fields", fields);
-        if page_token.is_some() {
-            file_list_call = file_list_call.page_token(page_token.unwrap().as_str())
+        if let Some(token) = page_token {
+            file_list_call = file_list_call.page_token(token.as_str())
         }
         let hub_result = file_list_call.doit().await;
         match hub_result {
@@ -109,11 +109,10 @@ impl Drive {
                 .iter()
                 .any(|pattern| pattern.matches_path(path));
         }
-        return self
-            .config
+        self.config
             .exclude
             .iter()
-            .any(|pattern| pattern.matches_path(path));
+            .any(|pattern| pattern.matches_path(path))
     }
 
     fn get_path(&self, file: &File, files_by_id: &HashMap<String, File>) -> PathBuf {
@@ -186,11 +185,11 @@ impl Drive {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let path = file_wrapper.path.clone();
         let create_dirs_result = create_dir_all(path.parent().unwrap());
-        if create_dirs_result.is_err() {
+        if let Err(error) = create_dirs_result {
             error!(
                 "Failed to create directory {} with error {}",
                 &path.parent().unwrap().display(),
-                create_dirs_result.unwrap_err()
+                error
             );
         }
         if !file_wrapper.mime_type.contains("google") {
@@ -202,9 +201,8 @@ impl Drive {
                 .add_scope(Scope::Full)
                 .doit()
                 .await;
-            if response.is_ok() {
-                let unwrapped_response = response.unwrap();
-                <Drive>::write_to_file(&path, unwrapped_response).await?;
+            if let Ok(resp) = response {
+                <Drive>::write_to_file(&path, resp).await?;
             }
         } else {
             <Drive>::write_to_google_file(file_wrapper, &path)?;
@@ -426,8 +424,8 @@ impl Drive {
         };
         let write_result =
             serde_json::to_writer_pretty(BufWriter::new(&config_file), &default_stored_config);
-        if write_result.is_err() {
-            error!("{}", write_result.unwrap_err());
+        if let Err(result) = write_result {
+            error!("{}", result);
         }
         Config {
             exclude: Vec::new(),
@@ -449,20 +447,20 @@ impl Drive {
             .join("config.json");
         if !config_file.exists() {
             let create_config_dir = create_dir_all(config_file.parent().unwrap());
-            if create_config_dir.is_err() {
+            if let Err(error) = create_config_dir {
                 panic!(
                     "Failed to create config path {}. {}",
                     config_file.display(),
-                    create_config_dir.unwrap_err()
+                    error
                 );
             }
             return fs::File::create(config_file).unwrap();
         }
-        return fs::OpenOptions::new()
+        fs::OpenOptions::new()
             .write(true)
             .read(true)
             .open(config_file)
-            .unwrap();
+            .unwrap()
     }
 
     fn get_base_config_path() -> String {

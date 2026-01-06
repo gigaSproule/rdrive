@@ -9,6 +9,7 @@ use drive3::common::Body;
 use drive3::hyper_rustls::HttpsConnector;
 use drive3::hyper_util::client::legacy::connect::HttpConnector;
 use drive3::hyper_util::client::legacy::Client;
+use drive3::yup_oauth2::CustomHyperClientBuilder;
 use drive3::{hyper_rustls, hyper_util, yup_oauth2, DriveHub};
 use log::{debug, error, LevelFilter, SetLoggerError};
 use log4rs::append::console::ConsoleAppender;
@@ -61,12 +62,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     "Upload {} to Google Drive for the first time",
                     file_wrapper.path.display()
                 );
-                let result = drive.upload_file(file_wrapper).await;
-                if result.is_err() {
+                let upload_result = drive.upload_file(file_wrapper).await;
+                if let Err(result) = upload_result {
                     error!(
                         "Error occurred whilst uploading {} to Google Drive for the first time. {}",
                         file_wrapper.path.display(),
-                        result.unwrap_err()
+                        result
                     )
                 }
             }
@@ -168,7 +169,7 @@ fn get_client() -> Client<HttpsConnector<HttpConnector>, Body> {
             .with_native_roots()
             .expect("msg")
             .https_or_http()
-            .enable_http1()
+            .enable_http2()
             .build(),
     )
 }
@@ -182,11 +183,22 @@ async fn get_authenticator() -> Authenticator<HttpsConnector<HttpConnector>> {
         .to_str()
         .unwrap()
         .to_owned();
-    InstalledFlowAuthenticator::builder(secret, InstalledFlowReturnMethod::Interactive)
-        .persist_tokens_to_disk(token_file)
-        .build()
-        .await
+    let connector = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_native_roots()
         .unwrap()
+        .https_only()
+        .enable_http2()
+        .build();
+    let executor = hyper_util::rt::TokioExecutor::new();
+    InstalledFlowAuthenticator::with_client(
+        secret,
+        InstalledFlowReturnMethod::Interactive,
+        CustomHyperClientBuilder::from(Client::builder(executor).build(connector)),
+    )
+    .persist_tokens_to_disk(token_file)
+    .build()
+    .await
+    .unwrap()
 }
 
 fn get_db_connection() -> Connection {
