@@ -19,7 +19,7 @@ jobs:
     runs-on: "ubuntu-latest"
     timeout-minutes: 30
     container:
-      image: "returntocorp/semgrep@sha256:b94b53d02fd4a022f9eac4e2af1380f5c3c4c21400e79d3336bdff1d1db5e796"
+      image: "returntocorp/semgrep@sha256:51c9f53a4fce0d55e9abd08d7b96968654248a4b1122e77f20e0a49c0072446c"
     if: (github.actor != 'dependabot[bot]')
     env:
       # Scan changed files in PRs, block on new issues only (existing issues ignored)
